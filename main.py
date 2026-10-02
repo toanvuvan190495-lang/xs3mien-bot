@@ -79,38 +79,61 @@ async def summary_job():
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update,
         "🤖 <b>BOT XỔ SỐ 3 MIỀN V2.1</b>\\n\\n"
-        "/status - trạng thái bot\\n"
-        "/mn - phân tích Miền Nam ngay\\n"
-        "/mt - phân tích Miền Trung ngay\\n"
-        "/mb - phân tích Miền Bắc ngay\\n"
-        "/result - xem dự đoán hôm nay\\n"
+        "/status - trạng thái bot\n"
+        "/mn - phân tích Miền Nam ngay\n"
+        "/mt - phân tích Miền Trung ngay\n"
+        "/mb - phân tích Miền Bắc ngay\n"
+        "/result - xem dự đoán hôm nay\n"
         "/test - kiểm tra Telegram"
     )
 
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await reply(update, f"✅ <b>Telegram hoạt động bình thường.</b>\\n⏰ {datetime.now(TZ).strftime('%H:%M:%S %d/%m/%Y')}")
+    await reply(update, f"✅ <b>Telegram hoạt động bình thường.</b>\n⏰ {datetime.now(TZ).strftime('%H:%M:%S %d/%m/%Y')}")
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    d = today()
-    lines = [
-        "🟢 <b>BOT ONLINE</b>", "",
-        f"⏰ {datetime.now(TZ).strftime('%H:%M:%S %d/%m/%Y')}",
-        f"Telegram: {'✅' if settings.telegram_token else '❌'}",
-        f"Chat ID: {'✅' if settings.telegram_chat_id else '❌'}",
-        f"Xổ số API key: {'✅' if settings.xoso_api_key else '❌'}",
-        f"GPT: {'✅ ON' if settings.use_gpt else '⏸ OFF'}",
-        f"Web sources: {'✅ ON' if settings.use_web_sources else '⏸ OFF'}",
-        "", "📅 <b>Lịch tự động</b>",
-        "MN: 15:15", "MT: 16:15", "MB: 17:15", "Tổng kết: 19:00",
-        "", "📌 <b>Dự đoán hôm nay</b>"
-    ]
-    for region in ("MN", "MT", "MB"):
-        p = store.get_prediction(d.isoformat(), region)
-        lines.append(
-            f"{REGION_NAMES[region]}: {' – '.join(p['song_thu'])} ✅"
-            if p else f"{REGION_NAMES[region]}: chưa chốt"
+    try:
+        d = today()
+
+        telegram_ok = bool(getattr(settings, "telegram_token", ""))
+        chat_ok = bool(getattr(settings, "telegram_chat_id", ""))
+        use_gpt = bool(getattr(settings, "use_gpt", False))
+        use_web = bool(getattr(settings, "use_web_sources", True))
+        timezone_name = str(getattr(settings, "timezone", "Asia/Ho_Chi_Minh"))
+
+        lines = [
+            "🟢 <b>BOT ONLINE</b>", "",
+            f"⏰ {datetime.now(TZ).strftime('%H:%M:%S %d/%m/%Y')}",
+            f"🌏 Timezone: <code>{timezone_name}</code>",
+            f"Telegram: {'✅' if telegram_ok else '❌'}",
+            f"Chat ID: {'✅' if chat_ok else '❌'}",
+            f"GPT: {'✅ ON' if use_gpt else '⏸ OFF'}",
+            f"Web sources: {'✅ ON' if use_web else '⏸ OFF'}",
+            "", "📅 <b>Lịch tự động</b>",
+            "MN: 15:15",
+            "MT: 16:15",
+            "MB: 17:15",
+            "Tổng kết: 19:00",
+            "", "📌 <b>Dự đoán hôm nay</b>"
+        ]
+
+        for region in ("MN", "MT", "MB"):
+            try:
+                p = store.get_prediction(d.isoformat(), region)
+                if p and p.get("song_thu"):
+                    lines.append(f"{REGION_NAMES[region]}: {' – '.join(p['song_thu'])} ✅")
+                else:
+                    lines.append(f"{REGION_NAMES[region]}: chưa chốt")
+            except Exception as e:
+                lines.append(f"{REGION_NAMES[region]}: lỗi đọc dữ liệu ({type(e).__name__})")
+
+        await reply(update, "\n".join(lines))
+
+    except Exception as e:
+        log.exception("Status command failed")
+        await reply(
+            update,
+            f"❌ Lỗi /status: <code>{type(e).__name__}: {str(e)[:500]}</code>"
         )
-    await reply(update, "\n".join(lines))
 
 async def manual_region(update: Update, region: str):
     await reply(update, f"⏳ Đang phân tích <b>{REGION_NAMES[region]}</b>...")
