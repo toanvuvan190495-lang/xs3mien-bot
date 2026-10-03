@@ -141,6 +141,78 @@ class MBPerformance:
         }
 
 
+
+    def month(self, ref_date: date):
+        start = ref_date.replace(day=1)
+
+        # Xác định ngày cuối tháng.
+        if ref_date.month == 12:
+            next_month = ref_date.replace(
+                year=ref_date.year + 1,
+                month=1,
+                day=1,
+            )
+        else:
+            next_month = ref_date.replace(
+                month=ref_date.month + 1,
+                day=1,
+            )
+
+        end = next_month - timedelta(days=1)
+
+        all_days = self._load().get("days", {})
+        rows = []
+
+        d = start
+        while d <= end:
+            key = d.isoformat()
+            if key in all_days:
+                rows.append(all_days[key])
+            d += timedelta(days=1)
+
+        return {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "days": rows,
+            "settled_days": len(rows),
+
+            "loto_hits": sum(
+                int(r.get("total_loto_hits", 0))
+                for r in rows
+            ),
+            "loto_payout": sum(
+                int(r.get("loto_payout", 0))
+                for r in rows
+            ),
+            "loto_capital": sum(
+                int(r.get("loto_capital", LOTO_DAILY_STAKE))
+                for r in rows
+            ),
+
+            "db64_wins": sum(
+                int(bool(r.get("db64_hit", False)))
+                for r in rows
+            ),
+            "db64_payout": sum(
+                int(r.get("db64_payout", 0))
+                for r in rows
+            ),
+            "db64_capital": sum(
+                int(r.get("db64_capital", DB64_DAILY_STAKE))
+                for r in rows
+            ),
+
+            "total_payout": sum(
+                int(r.get("total_payout", 0))
+                for r in rows
+            ),
+            "total_capital": sum(
+                int(r.get("total_capital", TOTAL_DAILY_STAKE))
+                for r in rows
+            ),
+        }
+
+
 def format_result(record: dict) -> str:
     loto_net = record["loto_net"]
     db_net = record["db64_net"]
@@ -262,3 +334,53 @@ def format_weekly(summary: dict) -> str:
     ]
 
     return "\n".join(lines)
+def format_monthly(summary: dict) -> str:
+    lines = [
+        "🗓 <b>TỔNG KẾT THÁNG MIỀN BẮC</b>",
+        f"📅 {summary['start']} → {summary['end']}",
+        "",
+    ]
+
+    rows = summary.get("days", [])
+    if not rows:
+        lines.append("Chưa có dữ liệu đối soát trong tháng.")
+        return "\n".join(lines)
+
+    # Hiển thị theo từng ngày nhưng giữ gọn.
+    for r in rows:
+        lines.append(
+            f"• {r['date']}: STL {r.get('total_loto_hits', 0)} nháy"
+            f" | ĐB64 {'✅' if r.get('db64_hit') else '❌'}"
+        )
+
+    loto_net = summary["loto_payout"] - summary["loto_capital"]
+    db_net = summary["db64_payout"] - summary["db64_capital"]
+    total_net = summary["total_payout"] - summary["total_capital"]
+
+    lines += [
+        "",
+        f"🔥 Song thủ tháng: <b>về {summary['loto_hits']} nháy</b>",
+        f"💰 STL nhận: <b>{_money(summary['loto_payout'])}</b>",
+        f"💸 STL vốn: <b>{_money(summary['loto_capital'])}</b>",
+        f"📈 STL lãi/lỗ: <b>{_money(loto_net)}</b>",
+        "",
+
+        f"🎯 ĐB64 tháng: <b>trúng {summary['db64_wins']}/{summary['settled_days']} ngày</b>",
+        f"💰 ĐB64 nhận: <b>{_money(summary['db64_payout'])}</b>",
+        f"💸 ĐB64 vốn: <b>{_money(summary['db64_capital'])}</b>",
+        f"📈 ĐB64 lãi/lỗ: <b>{_money(db_net)}</b>",
+        "",
+
+        "━━━━━━━━━━━━━━",
+        f"📌 Số ngày đã đối soát: <b>{summary['settled_days']}</b>",
+        f"💼 Tổng vốn tháng: <b>{_money(summary['total_capital'])}</b>",
+        f"💵 Tổng nhận tháng: <b>{_money(summary['total_payout'])}</b>",
+        f"📊 Tổng lãi/lỗ tháng: <b>{_money(total_net)}</b>",
+        "",
+        "<i>Quy ước: STL 270.000đ/số/ngày × 2 số; "
+        "1 nháy nhận 990.000đ. ĐB64 vốn 640.000đ/ngày; "
+        "trúng nhận 990.000đ.</i>",
+    ]
+
+    return "\n".join(lines)
+

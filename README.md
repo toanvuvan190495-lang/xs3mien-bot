@@ -128,3 +128,22 @@ Giao của 2 trạng thái tạo nhóm đầu số ưu tiên:
 
 Nhóm đầu số ưu tiên được cộng điểm trong component 50% cầu số 4.
 Nếu confidence của cầu thấp, điểm bị co về trung tính để tránh ép sai.
+
+
+## V3.3 - Tổng kết tháng
+
+- `/month`: xem tổng kết tháng hiện tại.
+- 20:15 ngày cuối cùng của mỗi tháng: bot tự gửi tổng kết tháng.
+- Nếu ngày cuối tháng rơi vào Chủ nhật:
+  - 20:00 gửi tổng kết tuần.
+  - 20:15 gửi tổng kết tháng.
+
+Tổng kết tháng gồm:
+- tổng nháy song thủ;
+- số ngày ĐB64 trúng;
+- vốn STL;
+- vốn ĐB64;
+- tổng tiền nhận;
+- lãi/lỗ STL;
+- lãi/lỗ ĐB64;
+- lãi/lỗ tổng.

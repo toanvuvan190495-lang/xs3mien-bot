@@ -15,7 +15,7 @@ from storage import Storage
 from engine import PredictionEngine
 from settlement import settle
 from messages import format_prediction
-from mb_performance import MBPerformance, format_result, format_daily, format_weekly
+from mb_performance import MBPerformance, format_result, format_daily, format_weekly, format_monthly
 
 
 logging.basicConfig(
@@ -164,6 +164,11 @@ async def weekly_summary_job():
     await send(format_weekly(performance.week(d)))
 
 
+async def monthly_summary_job():
+    d = today()
+    await send(format_monthly(performance.month(d)))
+
+
 async def startup_recovery():
     """
     Nếu Railway vừa restart gần giờ chạy:
@@ -199,6 +204,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/settle - kiểm tra/đối soát kết quả ngay\n"
         "/today - tổng kết hôm nay\n"
         "/week - tổng kết tuần hiện tại\n"
+        "/month - tổng kết tháng hiện tại\n"
         "/status - trạng thái bot\n"
         "/test - kiểm tra Telegram"
     )
@@ -233,6 +239,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Có KQ → báo ngay",
             "19:15 → Tổng kết ngày",
             "20:00 Chủ nhật → Tổng kết tuần",
+            "20:15 ngày cuối tháng → Tổng kết tháng",
             "",
             "📌 <b>HÔM NAY</b>",
         ]
@@ -360,6 +367,10 @@ async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, format_weekly(performance.week(today())))
 
 
+async def cmd_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, format_monthly(performance.month(today())))
+
+
 async def startup():
     global application
 
@@ -377,6 +388,7 @@ async def startup():
     application.add_handler(CommandHandler("settle", cmd_settle))
     application.add_handler(CommandHandler("today", cmd_today))
     application.add_handler(CommandHandler("week", cmd_week))
+    application.add_handler(CommandHandler("month", cmd_month))
 
     scheduler = AsyncIOScheduler(timezone=TZ)
 
@@ -427,6 +439,18 @@ async def startup():
         misfire_grace_time=1800,
     )
 
+    scheduler.add_job(
+        monthly_summary_job,
+        "cron",
+        day="last",
+        hour=20,
+        minute=15,
+        id="summary_MB_monthly",
+        replace_existing=True,
+        coalesce=True,
+        misfire_grace_time=1800,
+    )
+
     await application.initialize()
     await application.start()
 
@@ -438,7 +462,7 @@ async def startup():
     scheduler.start()
 
     log.info("XS MB FINAL started")
-    log.info("Commands: /mb /result /settle /today /week /status /test")
+    log.info("Commands: /mb /result /settle /today /week /month /status /test")
 
     # Tự xử lý trường hợp Railway vừa restart gần giờ dự đoán/đối soát.
     await startup_recovery()
