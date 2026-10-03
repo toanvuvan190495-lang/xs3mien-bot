@@ -77,38 +77,73 @@ async def predict_job():
         log.exception("Prediction failed MB")
 
 
+
+async def _settle_prediction(p, d, results, notify=True):
+    complete, loto_hits, db_hits = settle(p, results)
+
+    if not complete:
+        return False
+
+    await asyncio.to_thread(engine.ingest_results, "MB", d, results)
+
+    store.save_settlement(
+        d.isoformat(), "MB", results, loto_hits, db_hits
+    )
+    store.update_source_performance(
+        d.isoformat(), "MB", results
+    )
+
+    record = performance.record(
+        d.isoformat(), p, loto_hits, db_hits
+    )
+
+    if notify:
+        await send(format_result(record))
+
+    return True
+
+
 async def settlement_poll():
     d = today()
+    pending = [
+        p for p in store.unsettled_today(d.isoformat())
+        if p.get("region") == "MB"
+    ]
 
-    for p in store.unsettled_today(d.isoformat()):
-        if p.get("region") != "MB":
-            continue
+    if not pending:
+        return
 
+    for p in pending:
         try:
-            results = await asyncio.to_thread(engine.fetch_results, "MB", d)
-            complete, loto_hits, db_hits = settle(p, results)
+            results = await asyncio.to_thread(
+                engine.fetch_results, "MB", d
+            )
 
-            if not complete:
+            source = getattr(engine.results, "last_source", None)
+            errors = getattr(engine.results, "last_errors", [])
+
+            if not results:
+                log.info(
+                    "MB result not ready/parsed. tried=%s",
+                    " | ".join(errors[-3:]) if errors else "unknown"
+                )
                 continue
 
-            # Lưu lịch sử thực tế trước để lần sau model có dữ liệu mới.
-            await asyncio.to_thread(engine.ingest_results, "MB", d, results)
-
-            # Lưu settlement + chấm reliability từng nguồn.
-            store.save_settlement(
-                d.isoformat(), "MB", results, loto_hits, db_hits
-            )
-            store.update_source_performance(
-                d.isoformat(), "MB", results
+            ok = await _settle_prediction(
+                p, d, results, notify=True
             )
 
-            # Lưu thống kê tiền/ngày/tuần cạnh SQLite trên volume.
-            record = performance.record(
-                d.isoformat(), p, loto_hits, db_hits
-            )
-
-            # Báo ngay khi kết quả MB đã đủ.
-            await send(format_result(record))
+            if ok:
+                log.info(
+                    "MB settlement completed. source=%s",
+                    source or "unknown"
+                )
+            else:
+                log.info(
+                    "MB result fetched but settlement incomplete. source=%s keys=%s",
+                    source or "unknown",
+                    list(results.keys()),
+                )
 
         except Exception:
             log.exception("Settlement failed MB")
@@ -161,6 +196,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 <b>BOT XỔ SỐ MIỀN BẮC · FINAL</b>\n\n"
         "/mb - phân tích & chốt Miền Bắc ngay\n"
         "/result - xem dự đoán hôm nay\n"
+        "/settle - kiểm tra/đối soát kết quả ngay\n"
         "/today - tổng kết hôm nay\n"
         "/week - tổng kết tuần hiện tại\n"
         "/status - trạng thái bot\n"
@@ -250,6 +286,65 @@ async def cmd_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+
+async def cmd_settle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    d = today()
+
+    existing = performance.get_day(d.isoformat())
+    if existing:
+        await reply(update, format_result(existing))
+        return
+
+    p = store.get_prediction(d.isoformat(), "MB")
+    if not p:
+        await reply(
+            update,
+            "📭 Hôm nay chưa có dự đoán MB nên chưa thể đối soát."
+        )
+        return
+
+    await reply(update, "🔎 Đang kiểm tra kết quả Miền Bắc...")
+
+    try:
+        results = await asyncio.to_thread(
+            engine.fetch_results, "MB", d
+        )
+
+        source = getattr(engine.results, "last_source", None)
+        errors = getattr(engine.results, "last_errors", [])
+
+        if not results:
+            detail = "\n".join(f"• {x}" for x in errors[-3:])
+            await reply(
+                update,
+                "⏳ Chưa lấy được bộ KQ MB đầy đủ 27 giải.\n"
+                f"<b>Nguồn đã thử:</b>\n{detail or 'không có thông tin'}"
+            )
+            return
+
+        ok = await _settle_prediction(
+            p, d, results, notify=False
+        )
+
+        if not ok:
+            await reply(
+                update,
+                f"⏳ Đã lấy dữ liệu từ <b>{source or 'nguồn web'}</b> "
+                "nhưng chưa đủ điều kiện đối soát."
+            )
+            return
+
+        record = performance.get_day(d.isoformat())
+        await reply(update, format_result(record))
+
+    except Exception as e:
+        log.exception("Manual settle failed")
+        await reply(
+            update,
+            f"❌ /settle lỗi: <code>{type(e).__name__}: {str(e)[:500]}</code>"
+        )
+
+
 async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = today()
     await reply(
@@ -279,6 +374,7 @@ async def startup():
     application.add_handler(CommandHandler("status", cmd_status))
     application.add_handler(CommandHandler("mb", cmd_mb))
     application.add_handler(CommandHandler("result", cmd_result))
+    application.add_handler(CommandHandler("settle", cmd_settle))
     application.add_handler(CommandHandler("today", cmd_today))
     application.add_handler(CommandHandler("week", cmd_week))
 
@@ -342,7 +438,7 @@ async def startup():
     scheduler.start()
 
     log.info("XS MB FINAL started")
-    log.info("Commands: /mb /result /today /week /status /test")
+    log.info("Commands: /mb /result /settle /today /week /status /test")
 
     # Tự xử lý trường hợp Railway vừa restart gần giờ dự đoán/đối soát.
     await startup_recovery()

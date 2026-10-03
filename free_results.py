@@ -3,165 +3,207 @@ from __future__ import annotations
 import re
 import unicodedata
 from datetime import date
+from urllib.parse import quote
+
 import requests
 from bs4 import BeautifulSoup
 
-REGION_SLUG = {"MN": "mien-nam", "MT": "mien-trung", "MB": "mien-bac"}
 
-PRIZE_LENGTH_PATTERN_MNMT = [
-    2, 3,
-    4, 4, 4,
-    4,
-    5, 5, 5, 5, 5, 5, 5,
-    5, 5,
-    5,
-    5,
-    6,
-]
-
-ALIASES = {
-    "TP. HCM": ["TP. HCM", "TP HCM", "Hồ Chí Minh", "TP Hồ Chí Minh"],
-    "Đồng Tháp": ["Đồng Tháp"], "Cà Mau": ["Cà Mau"], "Bến Tre": ["Bến Tre"],
-    "Vũng Tàu": ["Vũng Tàu"], "Bạc Liêu": ["Bạc Liêu"], "Đồng Nai": ["Đồng Nai"],
-    "Cần Thơ": ["Cần Thơ"], "Sóc Trăng": ["Sóc Trăng"], "Tây Ninh": ["Tây Ninh"],
-    "An Giang": ["An Giang"], "Bình Thuận": ["Bình Thuận"], "Vĩnh Long": ["Vĩnh Long"],
-    "Bình Dương": ["Bình Dương"], "Trà Vinh": ["Trà Vinh"], "Long An": ["Long An"],
-    "Bình Phước": ["Bình Phước"], "Hậu Giang": ["Hậu Giang"], "Tiền Giang": ["Tiền Giang"],
-    "Kiên Giang": ["Kiên Giang"], "Đà Lạt": ["Đà Lạt", "Lâm Đồng"],
-
-    "Huế": ["Huế", "Thừa Thiên Huế", "Thừa T. Huế"], "Phú Yên": ["Phú Yên"],
-    "Đắk Lắk": ["Đắk Lắk", "Đắc Lắc"], "Quảng Nam": ["Quảng Nam"],
-    "Đà Nẵng": ["Đà Nẵng"], "Khánh Hòa": ["Khánh Hòa"], "Bình Định": ["Bình Định"],
-    "Quảng Trị": ["Quảng Trị"], "Quảng Bình": ["Quảng Bình"], "Gia Lai": ["Gia Lai"],
-    "Ninh Thuận": ["Ninh Thuận"], "Quảng Ngãi": ["Quảng Ngãi"],
-    "Đắk Nông": ["Đắk Nông", "Đắc Nông"], "Kon Tum": ["Kon Tum"],
-
-    "Hà Nội": ["Hà Nội"], "Quảng Ninh": ["Quảng Ninh"], "Bắc Ninh": ["Bắc Ninh"],
-    "Hải Phòng": ["Hải Phòng"], "Nam Định": ["Nam Định"], "Thái Bình": ["Thái Bình"],
-}
-
-def strip_accents(s: str) -> str:
+def _norm(s: str) -> str:
     s = s.replace("Đ", "D").replace("đ", "d")
     s = unicodedata.normalize("NFD", s)
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
-    return " ".join(s.lower().replace(".", " ").split())
+    return " ".join(s.lower().split())
 
-def matching_run(tokens):
-    n = len(PRIZE_LENGTH_PATTERN_MNMT)
-    for i in range(len(tokens) - n + 1):
-        w = tokens[i:i+n]
-        if [len(x) for x in w] == PRIZE_LENGTH_PATTERN_MNMT:
-            return w
-    return None
+
+EXPECTED = [
+    ("DB", 1, 5, [r"\bdb\b", r"giai db", r"giai dac biet"]),
+    ("G1", 1, 5, [r"\bg\.?\s*1\b", r"giai nhat", r"giai 1"]),
+    ("G2", 2, 5, [r"\bg\.?\s*2\b", r"giai nhi", r"giai 2"]),
+    ("G3", 6, 5, [r"\bg\.?\s*3\b", r"giai ba", r"giai 3"]),
+    ("G4", 4, 4, [r"\bg\.?\s*4\b", r"giai tu", r"giai 4"]),
+    ("G5", 6, 4, [r"\bg\.?\s*5\b", r"giai nam", r"giai 5"]),
+    ("G6", 3, 3, [r"\bg\.?\s*6\b", r"giai sau", r"giai 6"]),
+    ("G7", 4, 2, [r"\bg\.?\s*7\b", r"giai bay", r"giai 7"]),
+]
+
+
+def _matches_label(text_norm: str, patterns):
+    return any(re.search(p, text_norm, re.I) for p in patterns)
+
+
+def _extract_rows_from_tags(soup: BeautifulSoup):
+    """
+    Tìm từng hàng giải từ table/div/li. Chỉ nhận nếu đủ 8 giải
+    với đúng cơ cấu 27 số của XSMB.
+    """
+    found = {}
+
+    # Ưu tiên table rows, sau đó các block nhỏ.
+    tags = list(soup.find_all("tr"))
+    tags += [
+        x for x in soup.find_all(["div", "li", "p"])
+        if len(" ".join(x.stripped_strings)) <= 260
+    ]
+
+    for tag in tags:
+        raw = " ".join(tag.stripped_strings)
+        if not raw:
+            continue
+        ntext = _norm(raw)
+
+        for key, count, digits, patterns in EXPECTED:
+            if key in found:
+                continue
+            if not _matches_label(ntext, patterns):
+                continue
+
+            nums = re.findall(rf"(?<!\d)(\d{{{digits}}})(?!\d)", raw)
+            if len(nums) >= count:
+                found[key] = nums[-count:] if key == "G7" else nums[:count]
+
+    if len(found) != len(EXPECTED):
+        return None
+
+    prizes = []
+    for key, count, _, _ in EXPECTED:
+        vals = found.get(key, [])
+        if len(vals) != count:
+            return None
+        prizes.extend(vals)
+
+    if len(prizes) != 27:
+        return None
+
+    return {
+        "special": found["DB"][0],
+        "all_prizes": prizes,
+    }
+
+
+def _extract_by_sequential_labels(text: str):
+    """
+    Fallback khi website không dùng table rows.
+    Cắt nội dung giữa các nhãn giải theo đúng thứ tự DB -> G7.
+    """
+    ntext = _norm(text)
+
+    label_spans = []
+    cursor = 0
+    for key, count, digits, patterns in EXPECTED:
+        best = None
+        for p in patterns:
+            m = re.search(p, ntext[cursor:], re.I)
+            if m:
+                pos = cursor + m.start()
+                end = cursor + m.end()
+                if best is None or pos < best[0]:
+                    best = (pos, end)
+        if best is None:
+            return None
+        label_spans.append((key, count, digits, best[0], best[1]))
+        cursor = best[1]
+
+    found = {}
+    for i, (key, count, digits, start, label_end) in enumerate(label_spans):
+        end = label_spans[i + 1][3] if i + 1 < len(label_spans) else min(len(ntext), label_end + 400)
+        seg = ntext[label_end:end]
+        nums = re.findall(rf"(?<!\d)(\d{{{digits}}})(?!\d)", seg)
+        if len(nums) < count:
+            return None
+        found[key] = nums[:count]
+
+    prizes = []
+    for key, count, _, _, _ in label_spans:
+        prizes.extend(found[key])
+
+    if len(prizes) != 27:
+        return None
+
+    return {"special": found["DB"][0], "all_prizes": prizes}
+
 
 class FreeResultSource:
-    def __init__(self, timeout=20):
+    def __init__(self, timeout=12):
         self.timeout = timeout
         self.s = requests.Session()
         self.s.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36"
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/152 Safari/537.36"
+            ),
+            "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
         })
+        self.last_source = None
+        self.last_errors = []
 
-    def url(self, region, d):
-        return f"https://www.minhngoc.net.vn/ket-qua-xo-so/{REGION_SLUG[region]}/{d.strftime('%d-%m-%Y')}.html"
+    def _urls(self, d: date):
+        dd = d.strftime("%d")
+        mm = d.strftime("%m")
+        yyyy = d.strftime("%Y")
 
-    def _text(self, region, d):
-        r = self.s.get(self.url(region, d), timeout=self.timeout)
+        return [
+            (
+                "minhngoc",
+                f"https://www.minhngoc.net.vn/ket-qua-xo-so/mien-bac/{dd}-{mm}-{yyyy}.html",
+            ),
+            (
+                "xsmn_mobi",
+                f"https://xsmn.mobi/xsmb-{d.day}-{d.month}-{d.year}.html",
+            ),
+            (
+                "xoso_com_vn",
+                f"https://xoso.com.vn/xsmb-{dd}-{mm}-{yyyy}.html",
+            ),
+        ]
+
+    def _fetch_one(self, name, url):
+        r = self.s.get(url, timeout=self.timeout, allow_redirects=True)
         r.raise_for_status()
+
         soup = BeautifulSoup(r.text, "lxml")
         for t in soup(["script", "style", "noscript", "svg", "iframe"]):
             t.decompose()
-        return " ".join(soup.stripped_strings)
 
-    def _today_block(self, text, region, d):
-        """
-        Cắt đúng khối KẾT QUẢ ngày D, bỏ menu/navigation và các ngày trước đó.
-        """
-        target = d.strftime("%d/%m/%Y")
-        region_name = {"MN":"Miền Nam","MT":"Miền Trung","MB":"Miền Bắc"}[region]
+        # 1) DOM/table parser
+        result = _extract_rows_from_tags(soup)
+        if result:
+            return result
 
-        # Dùng normalized text để tìm marker không phụ thuộc dấu.
-        norm = strip_accents(text)
-        marker = strip_accents(f"KẾT QUẢ XỔ SỐ {region_name} - {target}")
+        # 2) Sequential text parser
+        text = " ".join(soup.stripped_strings)
+        result = _extract_by_sequential_labels(text)
+        if result:
+            return result
 
-        start = norm.find(marker)
-        if start < 0:
-            # fallback: tìm lần xuất hiện ngày sau tiêu đề KQXS
-            day = strip_accents(target)
-            candidates = [m.start() for m in re.finditer(re.escape(day), norm)]
-            if not candidates:
-                return text
-            start = candidates[0]
-
-        # Tìm marker ngày kế tiếp trong lịch sử để cắt block hiện tại.
-        # Trang thường hiển thị ngày hiện tại rồi ngày trước đó.
-        tail = norm[start+1:]
-        next_marker = strip_accents(f"KẾT QUẢ XỔ SỐ {region_name} - ")
-        m = tail.find(next_marker)
-        end = (start + 1 + m) if m >= 0 else min(len(text), start + 8000)
-
-        # Do strip_accents giữ nguyên chiều dài gần như toàn bộ ký tự Latin,
-        # vị trí đủ ổn để cắt block. Nếu có chênh lệch nhỏ, cộng buffer.
-        return text[max(0, start-150): min(len(text), end+150)]
-
-    def _parse_mnmt(self, block, stations):
-        out = {}
-        norm = strip_accents(block)
-
-        positions = []
-        for st in stations:
-            best = None
-            for alias in ALIASES.get(st, [st]):
-                # lấy occurrence cuối cùng trong block để tránh heading/link lặp ở đầu
-                hits = [m.start() for m in re.finditer(re.escape(strip_accents(alias)), norm)]
-                if hits:
-                    p = hits[-1]
-                    if best is None or p < best:
-                        best = p
-            if best is not None:
-                positions.append((st, best))
-
-        positions.sort(key=lambda x: x[1])
-
-        for i, (st, start) in enumerate(positions):
-            end = positions[i+1][1] if i+1 < len(positions) else len(norm)
-            seg = norm[start:end]
-            tokens = re.findall(r"(?<!\d)(\d{2,6})(?!\d)", seg)
-            run = matching_run(tokens)
-            if run:
-                out[st] = {"special": run[-1], "all_prizes": run}
-
-        return out
-
-    def _parse_mb(self, block, stations):
-        # Trong block ngày đã cắt, lấy theo nhãn giải.
-        norm = " ".join(block.split())
-
-        m = re.search(r"(?:Giải ĐB|Giải Đặc Biệt)\s+(\d{5})", norm, re.I)
-        special = m.group(1) if m else None
-
-        if not special:
-            # fallback: DB MB là số 5 chữ số đầu tiên sau phần nhãn giải
-            nums5 = re.findall(r"(?<!\d)(\d{5})(?!\d)", norm)
-            special = nums5[0] if nums5 else None
-
-        nums = re.findall(r"(?<!\d)(\d{2,5})(?!\d)", norm)
-
-        if special:
-            try:
-                idx = nums.index(special)
-                nums = nums[idx:]
-            except ValueError:
-                nums.insert(0, special)
-
-        prizes = nums[:27]
-        if special and len(prizes) >= 27:
-            return {stations[0]: {"special": special, "all_prizes": prizes}}
-        return {}
+        raise ValueError("chưa nhận diện đủ 27 giải MB")
 
     def fetch(self, region, d, stations):
-        text = self._text(region, d)
-        block = self._today_block(text, region, d)
-        if region in ("MN","MT"):
-            return self._parse_mnmt(block, stations)
-        return self._parse_mb(block, stations)
+        if region != "MB":
+            raise ValueError("Bản này chỉ hỗ trợ MB")
+
+        self.last_source = None
+        self.last_errors = []
+
+        for name, url in self._urls(d):
+            try:
+                entry = self._fetch_one(name, url)
+
+                # Validation cứng.
+                if (
+                    not entry.get("special")
+                    or len(entry.get("all_prizes", [])) != 27
+                ):
+                    raise ValueError("kết quả không đủ 27 giải")
+
+                self.last_source = name
+                return {
+                    stations[0]: entry
+                }
+
+            except Exception as e:
+                self.last_errors.append(
+                    f"{name}: {type(e).__name__}: {str(e)[:180]}"
+                )
+
+        return {}

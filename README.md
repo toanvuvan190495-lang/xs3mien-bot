@@ -71,3 +71,13 @@ Nếu database mới/trống, có thể đồng bộ MB:
 ```bash
 python history_sync_mb.py 180
 ```
+
+
+## Result fallback V1
+Kết quả MB được thử tuần tự:
+1. Minh Ngọc
+2. xsmn.mobi
+3. xoso.com.vn
+
+Chỉ nhận kết quả khi parser đọc đủ đúng 27 số giải MB.
+Lệnh `/settle` dùng để ép kiểm tra và hiển thị lỗi từng nguồn khi cần.
