@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from urllib.parse import urljoin, urlparse
 
@@ -163,19 +165,27 @@ def _extract_soicauxsmb(text):
     return _rank(loto,30),_rank(db,70),_window(text,LOTO_KEYS+DB_KEYS,650)[:2800]
 
 class CommunityCollector:
-    def __init__(self,timeout=18):
+    def __init__(self,timeout=12):
         self.timeout=timeout
-        self.s=requests.Session()
-        self.s.headers.update({
+        self._local=threading.local()
+        self._headers={
             "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36",
             "Accept-Language":"vi-VN,vi;q=0.9,en;q=0.8",
-        })
+        }
+
+    def _session(self):
+        s=getattr(self._local,"session",None)
+        if s is None:
+            s=requests.Session()
+            s.headers.update(self._headers)
+            self._local.session=s
+        return s
 
     def _get(self,url):
         last=None
         for _ in range(2):
             try:
-                r=self.s.get(url,timeout=self.timeout,allow_redirects=True)
+                r=self._session().get(url,timeout=self.timeout,allow_redirects=True)
                 r.raise_for_status()
                 return r.text
             except Exception as e:
@@ -219,15 +229,24 @@ class CommunityCollector:
         }
 
     def collect(self,region,draw_date):
+        specs=[s for s in SOURCES if region in s["regions"]]
+        indexed={s["name"]:i for i,s in enumerate(specs)}
         out=[]
-        for spec in SOURCES:
-            if region not in spec["regions"]: continue
+
+        def run(spec):
             try:
-                out.append(self.fetch_source(spec,region,draw_date))
+                return self.fetch_source(spec,region,draw_date)
             except Exception as e:
-                out.append({
+                return {
                     "source":spec["name"],"kind":spec["kind"],"base_weight":spec["base_weight"],
                     "loto":[],"db":[],"excerpt":"","ok":False,
                     "error":f"{type(e).__name__}: {e}",
-                })
+                }
+
+        with ThreadPoolExecutor(max_workers=min(7,max(1,len(specs)))) as ex:
+            futures=[ex.submit(run,s) for s in specs]
+            for f in as_completed(futures):
+                out.append(f.result())
+
+        out.sort(key=lambda r:indexed.get(r.get("source"),999))
         return out

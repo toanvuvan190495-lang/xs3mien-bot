@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -14,29 +14,46 @@ from config import settings, PREDICT_CRON, REGION_NAMES
 from storage import Storage
 from engine import PredictionEngine
 from settlement import settle
-from messages import format_prediction, format_settlement, format_daily_summary
+from messages import format_prediction
+from mb_performance import MBPerformance, format_result, format_daily, format_weekly
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-log = logging.getLogger("xs3mien_v21")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+log = logging.getLogger("xsmb_final")
 
 store = Storage(settings.db_path)
 engine = PredictionEngine(store)
+performance = MBPerformance(settings.db_path)
+
 TZ = ZoneInfo(settings.timezone)
 application: Application | None = None
 
+
+def now():
+    return datetime.now(TZ)
+
+
 def today():
-    return datetime.now(TZ).date()
+    return now().date()
+
 
 async def reply(update: Update, text: str):
     if update.effective_message:
         await update.effective_message.reply_text(
-            text, parse_mode=ParseMode.HTML, disable_web_page_preview=True
+            text,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
         )
+
 
 async def send(text: str):
     if not application or not settings.telegram_chat_id:
-        log.info("TELEGRAM DISABLED\\n%s", text)
+        log.info("TELEGRAM DISABLED\n%s", text)
         return
+
     await application.bot.send_message(
         chat_id=settings.telegram_chat_id,
         text=text,
@@ -44,166 +61,304 @@ async def send(text: str):
         disable_web_page_preview=True,
     )
 
-async def predict_region_now(region: str):
+
+async def predict_mb_now():
     d = today()
-    p = await asyncio.to_thread(engine.predict_region, region, d)
+    p = await asyncio.to_thread(engine.predict_region, "MB", d)
     store.save_prediction(p)
     return p
 
-async def predict_job(region: str):
+
+async def predict_job():
     try:
-        p = await predict_region_now(region)
+        p = await predict_mb_now()
         await send(format_prediction(p))
     except Exception:
-        log.exception("Prediction failed %s", region)
+        log.exception("Prediction failed MB")
+
 
 async def settlement_poll():
     d = today()
+
     for p in store.unsettled_today(d.isoformat()):
+        if p.get("region") != "MB":
+            continue
+
         try:
-            results = await asyncio.to_thread(engine.fetch_results, p["region"], d)
+            results = await asyncio.to_thread(engine.fetch_results, "MB", d)
             complete, loto_hits, db_hits = settle(p, results)
+
             if not complete:
                 continue
-            await asyncio.to_thread(engine.ingest_results, p["region"], d, results)
-            store.save_settlement(d.isoformat(), p["region"], results, loto_hits, db_hits)
-            store.update_source_performance(d.isoformat(), p["region"], results)
-            await send(format_settlement(p["region"], d.isoformat(), loto_hits, db_hits))
-        except Exception:
-            log.exception("Settlement failed %s", p["region"])
 
-async def summary_job():
+            # Lưu lịch sử thực tế trước để lần sau model có dữ liệu mới.
+            await asyncio.to_thread(engine.ingest_results, "MB", d, results)
+
+            # Lưu settlement + chấm reliability từng nguồn.
+            store.save_settlement(
+                d.isoformat(), "MB", results, loto_hits, db_hits
+            )
+            store.update_source_performance(
+                d.isoformat(), "MB", results
+            )
+
+            # Lưu thống kê tiền/ngày/tuần cạnh SQLite trên volume.
+            record = performance.record(
+                d.isoformat(), p, loto_hits, db_hits
+            )
+
+            # Báo ngay khi kết quả MB đã đủ.
+            await send(format_result(record))
+
+        except Exception:
+            log.exception("Settlement failed MB")
+
+
+async def daily_summary_job():
     d = today()
-    await send(format_daily_summary(d.isoformat(), store.daily_summary(d.isoformat())))
+    await send(
+        format_daily(
+            performance.get_day(d.isoformat()),
+            d.isoformat(),
+        )
+    )
+
+
+async def weekly_summary_job():
+    d = today()
+    await send(format_weekly(performance.week(d)))
+
+
+async def startup_recovery():
+    """
+    Nếu Railway vừa restart gần giờ chạy:
+    - 17:15–17:40 mà hôm nay chưa có dự đoán -> chạy bù một lần.
+    - Sau 18:15 mà có prediction chưa settle -> thử lấy KQ ngay.
+    """
+    dt = now()
+    d = dt.date()
+    current = dt.time()
+
+    try:
+        p = store.get_prediction(d.isoformat(), "MB")
+
+        if time(17, 15) <= current <= time(17, 40) and not p:
+            log.info("Startup recovery: missed 17:15 prediction, running now")
+            await predict_job()
+            p = store.get_prediction(d.isoformat(), "MB")
+
+        if time(18, 15) <= current <= time(20, 0) and p and not p.get("settled"):
+            log.info("Startup recovery: checking settlement")
+            await settlement_poll()
+
+    except Exception:
+        log.exception("Startup recovery failed")
+
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await reply(update,
-        "🤖 <b>BOT XỔ SỐ 3 MIỀN V2.1</b>\\n\\n"
-        "/status - trạng thái bot\n"
-        "/mn - phân tích Miền Nam ngay\n"
-        "/mt - phân tích Miền Trung ngay\n"
-        "/mb - phân tích Miền Bắc ngay\n"
+    await reply(
+        update,
+        "🤖 <b>BOT XỔ SỐ MIỀN BẮC · FINAL</b>\n\n"
+        "/mb - phân tích & chốt Miền Bắc ngay\n"
         "/result - xem dự đoán hôm nay\n"
+        "/today - tổng kết hôm nay\n"
+        "/week - tổng kết tuần hiện tại\n"
+        "/status - trạng thái bot\n"
         "/test - kiểm tra Telegram"
     )
 
+
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await reply(update, f"✅ <b>Telegram hoạt động bình thường.</b>\n⏰ {datetime.now(TZ).strftime('%H:%M:%S %d/%m/%Y')}")
+    await reply(
+        update,
+        f"✅ <b>Telegram hoạt động bình thường.</b>\n"
+        f"⏰ {now().strftime('%H:%M:%S %d/%m/%Y')}"
+    )
+
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         d = today()
-
-        telegram_ok = bool(getattr(settings, "telegram_token", ""))
-        chat_ok = bool(getattr(settings, "telegram_chat_id", ""))
-        use_gpt = bool(getattr(settings, "use_gpt", False))
-        use_web = bool(getattr(settings, "use_web_sources", True))
-        timezone_name = str(getattr(settings, "timezone", "Asia/Ho_Chi_Minh"))
+        p = store.get_prediction(d.isoformat(), "MB")
+        rec = performance.get_day(d.isoformat())
 
         lines = [
-            "🟢 <b>BOT ONLINE</b>", "",
-            f"⏰ {datetime.now(TZ).strftime('%H:%M:%S %d/%m/%Y')}",
-            f"🌏 Timezone: <code>{timezone_name}</code>",
-            f"Telegram: {'✅' if telegram_ok else '❌'}",
-            f"Chat ID: {'✅' if chat_ok else '❌'}",
-            f"GPT: {'✅ ON' if use_gpt else '⏸ OFF'}",
-            f"Web sources: {'✅ ON' if use_web else '⏸ OFF'}",
-            "", "📅 <b>Lịch tự động</b>",
-            "MN: 15:15",
-            "MT: 16:15",
-            "MB: 17:15",
-            "Tổng kết: 19:00",
-            "", "📌 <b>Dự đoán hôm nay</b>"
+            "🟢 <b>BOT MB ONLINE</b>",
+            "",
+            f"⏰ {now().strftime('%H:%M:%S %d/%m/%Y')}",
+            f"🌏 Timezone: <code>{settings.timezone}</code>",
+            f"Telegram: {'✅' if settings.telegram_token else '❌'}",
+            f"Web: {'✅ ON' if settings.use_web_sources else '⏸ OFF'}",
+            f"GPT reviewer: {'✅ ON' if settings.use_gpt else '⏸ OFF'}",
+            "",
+            "📅 <b>LỊCH TỰ ĐỘNG</b>",
+            "17:15 → Chốt MB",
+            "18:00–19:58 → Dò kết quả mỗi 2 phút",
+            "Có KQ → báo ngay",
+            "19:15 → Tổng kết ngày",
+            "20:00 Chủ nhật → Tổng kết tuần",
+            "",
+            "📌 <b>HÔM NAY</b>",
         ]
 
-        for region in ("MN", "MT", "MB"):
-            try:
-                p = store.get_prediction(d.isoformat(), region)
-                if p and p.get("song_thu"):
-                    lines.append(f"{REGION_NAMES[region]}: {' – '.join(p['song_thu'])} ✅")
-                else:
-                    lines.append(f"{REGION_NAMES[region]}: chưa chốt")
-            except Exception as e:
-                lines.append(f"{REGION_NAMES[region]}: lỗi đọc dữ liệu ({type(e).__name__})")
+        if p and p.get("song_thu"):
+            lines.append(f"Đã chốt: {' – '.join(p['song_thu'])} ✅")
+            lines.append(f"ĐB64: {len(p.get('db50', []))} số ✅")
+        else:
+            lines.append("Chưa chốt.")
+
+        if rec:
+            lines.append(
+                f"Đã đối soát: STL {rec['total_loto_hits']} nháy"
+                f" | ĐB64 {'✅' if rec['db64_hit'] else '❌'}"
+            )
 
         await reply(update, "\n".join(lines))
 
     except Exception as e:
-        log.exception("Status command failed")
+        log.exception("Status failed")
         await reply(
             update,
-            f"❌ Lỗi /status: <code>{type(e).__name__}: {str(e)[:500]}</code>"
+            f"❌ /status lỗi: <code>{type(e).__name__}: {str(e)[:400]}</code>",
         )
 
-async def manual_region(update: Update, region: str):
-    await reply(update, f"⏳ Đang phân tích <b>{REGION_NAMES[region]}</b>...")
-    try:
-        p = await predict_region_now(region)
-        await reply(update, format_prediction(p))
-    except Exception as e:
-        log.exception("Manual prediction failed %s", region)
-        await reply(update, f"❌ Lỗi {REGION_NAMES[region]}: <code>{type(e).__name__}: {str(e)[:400]}</code>")
-
-async def cmd_mn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await manual_region(update, "MN")
-
-async def cmd_mt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await manual_region(update, "MT")
 
 async def cmd_mb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await manual_region(update, "MB")
+    await reply(update, "⏳ Đang phân tích <b>MIỀN BẮC</b>...")
+
+    try:
+        p = await predict_mb_now()
+        await reply(update, format_prediction(p))
+    except Exception as e:
+        log.exception("Manual prediction failed")
+        await reply(
+            update,
+            f"❌ Lỗi MB: <code>{type(e).__name__}: {str(e)[:400]}</code>",
+        )
+
 
 async def cmd_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = today()
-    found = False
-    for region in ("MN", "MT", "MB"):
-        p = store.get_prediction(d.isoformat(), region)
-        if p:
-            found = True
-            await reply(update, format_prediction(p))
-    if not found:
-        await reply(update, "📭 Hôm nay chưa có dự đoán. Dùng /mn, /mt hoặc /mb để chạy ngay.")
+    p = store.get_prediction(d.isoformat(), "MB")
+
+    if p:
+        await reply(update, format_prediction(p))
+    else:
+        await reply(
+            update,
+            "📭 Hôm nay chưa có dự đoán. Dùng /mb để chạy ngay."
+        )
+
+
+async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    d = today()
+    await reply(
+        update,
+        format_daily(
+            performance.get_day(d.isoformat()),
+            d.isoformat(),
+        ),
+    )
+
+
+async def cmd_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, format_weekly(performance.week(today())))
+
 
 async def startup():
     global application
+
     if not settings.telegram_token:
-        raise RuntimeError("Thiếu TELEGRAM_BOT_TOKEN trong .env")
+        raise RuntimeError("Thiếu TELEGRAM_BOT_TOKEN trong Railway Variables/.env")
 
     application = Application.builder().token(settings.telegram_token).build()
+
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_start))
     application.add_handler(CommandHandler("test", cmd_test))
     application.add_handler(CommandHandler("status", cmd_status))
-    application.add_handler(CommandHandler("mn", cmd_mn))
-    application.add_handler(CommandHandler("mt", cmd_mt))
     application.add_handler(CommandHandler("mb", cmd_mb))
     application.add_handler(CommandHandler("result", cmd_result))
+    application.add_handler(CommandHandler("today", cmd_today))
+    application.add_handler(CommandHandler("week", cmd_week))
 
     scheduler = AsyncIOScheduler(timezone=TZ)
-    for region, t in PREDICT_CRON.items():
-        scheduler.add_job(predict_job, "cron", args=[region], hour=t["hour"], minute=t["minute"], id=f"predict_{region}", replace_existing=True)
-    scheduler.add_job(settlement_poll, "cron", hour="16-18", minute="*/5", id="settlement", replace_existing=True)
-    scheduler.add_job(summary_job, "cron", hour=19, minute=0, id="summary", replace_existing=True)
+
+    mb_time = PREDICT_CRON["MB"]
+
+    scheduler.add_job(
+        predict_job,
+        "cron",
+        hour=mb_time["hour"],
+        minute=mb_time["minute"],
+        id="predict_MB",
+        replace_existing=True,
+        coalesce=True,
+        misfire_grace_time=1800,
+    )
+
+    scheduler.add_job(
+        settlement_poll,
+        "cron",
+        hour="18-19",
+        minute="*/2",
+        id="settlement_MB",
+        replace_existing=True,
+        coalesce=True,
+        misfire_grace_time=600,
+    )
+
+    scheduler.add_job(
+        daily_summary_job,
+        "cron",
+        hour=19,
+        minute=15,
+        id="summary_MB_daily",
+        replace_existing=True,
+        coalesce=True,
+        misfire_grace_time=1200,
+    )
+
+    scheduler.add_job(
+        weekly_summary_job,
+        "cron",
+        day_of_week="sun",
+        hour=20,
+        minute=0,
+        id="summary_MB_weekly",
+        replace_existing=True,
+        coalesce=True,
+        misfire_grace_time=1800,
+    )
 
     await application.initialize()
     await application.start()
+
     if application.updater is None:
         raise RuntimeError("Telegram updater unavailable")
+
     await application.updater.start_polling(drop_pending_updates=True)
+
     scheduler.start()
 
-    log.info("XS 3 miền V2.1 started")
-    log.info("Commands: /status /mn /mt /mb /result /test")
+    log.info("XS MB FINAL started")
+    log.info("Commands: /mb /result /today /week /status /test")
+
+    # Tự xử lý trường hợp Railway vừa restart gần giờ dự đoán/đối soát.
+    await startup_recovery()
 
     try:
         while True:
             await asyncio.sleep(3600)
     finally:
         scheduler.shutdown(wait=False)
+
         if application.updater:
             await application.updater.stop()
+
         await application.stop()
         await application.shutdown()
+
 
 if __name__ == "__main__":
     asyncio.run(startup())
