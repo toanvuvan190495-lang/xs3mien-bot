@@ -199,6 +199,7 @@ def _choose_pair(scores, agreement, weighted_agreement, active, top_n=24):
     }
 
 
+
 def aggregate_region(
     station_bundles,
     community=None,
@@ -206,11 +207,14 @@ def aggregate_region(
     region="MB",
     selected_model="mean",
     community_meta=None,
+    db_context=None,
 ):
     meta = community_meta or {}
     active = int(meta.get("active_sources", 0))
 
-    # SONG THỦ
+    # ------------------------------------------------------------
+    # SONG THỦ: giữ logic hiện tại, không liên quan ĐB64 mới.
+    # ------------------------------------------------------------
     loto = score_model(selected_model, station_bundles)
     web_w = min(_web_weight(active, meta), community_max_weight)
 
@@ -226,34 +230,80 @@ def aggregate_region(
         active,
     )
 
-    # ĐB64: history exact-DB + web DB reliability/consensus.
-    db = {n: 0.0 for n in NUMBERS}
-    for n in NUMBERS:
-        vals = [bundle[1][n] for bundle in station_bundles.values()]
-        db[n] = sum(vals) / max(1, len(vals))
+    # ------------------------------------------------------------
+    # ĐB64 V3 — đúng trọng số người dùng chốt:
+    # 25% model ĐB lịch sử
+    # 50% cầu chữ số thứ 4 (Chẵn/Lẻ + Tài/Xỉu)
+    # 15% stability 30/60/90
+    # 10% web/source reliability
+    # ------------------------------------------------------------
+    ctx = db_context or {}
 
-    if community and web_w > 0:
+    history_db = normalize(ctx.get("history", {n: 0.0 for n in NUMBERS}))
+    stability = normalize(ctx.get("stability", {n: 0.0 for n in NUMBERS}))
+
+    digit4_info = ctx.get("digit4", {})
+    digit4_scores = digit4_info.get(
+        "scores",
+        {n: 0.5 for n in NUMBERS},
+    )
+
+    # Web DB layer: reliability + consensus, nhưng chỉ chiếm đúng 10%.
+    web_db_raw = {n: 0.0 for n in NUMBERS}
+    if community:
         cd = normalize(community[1])
-
-        # DB web weight thấp hơn/cùng mức song-thủ để tránh forum lấn át history.
-        db_w = min(community_max_weight, web_w)
-
         for n in NUMBERS:
-            db[n] = (1 - db_w) * db[n] + db_w * cd.get(n, 0.0)
-
-            # Agreement bonus nhỏ, chỉ dùng để phân hạng các số sát nhau.
             a = int(meta.get("db_agreement", {}).get(n, 0))
-            db[n] += min(0.07, 0.011 * a)
+            wa = float(meta.get("db_weighted_agreement", {}).get(n, 0.0))
+            consensus_bonus = min(0.10, 0.014 * a + 0.004 * wa)
+            web_db_raw[n] = cd.get(n, 0.0) + consensus_bonus
 
+    web_db = normalize(web_db_raw)
+
+    db_final = {}
+    components = {}
+
+    for n in NUMBERS:
+        h = history_db.get(n, 0.0)
+        p = float(digit4_scores.get(n, 0.5))
+        s = stability.get(n, 0.0)
+        w = web_db.get(n, 0.0)
+
+        db_final[n] = (
+            0.25 * h
+            + 0.50 * p
+            + 0.15 * s
+            + 0.10 * w
+        )
+
+        components[n] = {
+            "history": h,
+            "digit4": p,
+            "stability": s,
+            "web": w,
+        }
+
+    db_norm = normalize(db_final)
     loto_norm = normalize(loto)
-    db_norm = normalize(db)
 
-    # 64 số có score ĐB cao nhất.
-    db64 = sorted(NUMBERS, key=db_norm.get, reverse=True)[:64]
+    # 64 số điểm cuối cao nhất.
+    db64 = sorted(
+        NUMBERS,
+        key=lambda n: (db_norm[n], history_db[n], stability[n]),
+        reverse=True,
+    )[:64]
 
     return song_thu, db64, {
         "loto": {n: round(loto_norm[n] * 100, 1) for n in NUMBERS},
         "db": {n: round(db_norm[n] * 100, 1) for n in NUMBERS},
+        "db_components": components,
+        "db_formula": {
+            "history": 0.25,
+            "digit4": 0.50,
+            "stability": 0.15,
+            "web": 0.10,
+        },
+        "db_digit4": digit4_info,
         "selected_model": selected_model,
         "web_weight": round(web_w, 3),
         "active_sources": active,

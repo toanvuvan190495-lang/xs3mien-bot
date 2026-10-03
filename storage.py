@@ -198,7 +198,7 @@ class Storage:
         with self.connect() as con:
             for s in signals:
                 loto = list(dict.fromkeys(s["loto"]))[:20]  # cap tránh spam 100 số
-                db = list(dict.fromkeys(s["db"]))[:60]
+                db = list(dict.fromkeys(s["db"]))[:64]
                 if not loto and not db: continue
                 loto_hit = int(any(n in actual_loto for n in loto)) if loto else 0
                 db_hit = int(any(n in actual_db for n in db)) if db else 0
@@ -223,6 +223,26 @@ class Storage:
             ON CONFLICT(draw_date,region,station) DO UPDATE SET
                 special=excluded.special, prizes_json=excluded.prizes_json
             """,(draw_date,region,station,special,json.dumps(prizes)))
+
+
+    def get_region_history(self, region, before_date, limit=365):
+        """
+        Lấy lịch sử toàn miền, không khóa theo station.
+        MB cần chuỗi ĐB liên tục từng ngày để soi chữ số thứ 4.
+        """
+        with self.connect() as con:
+            rows = con.execute("""
+            SELECT * FROM draw_history
+            WHERE region=? AND draw_date<?
+            ORDER BY draw_date DESC LIMIT ?
+            """, (region, before_date, limit)).fetchall()
+
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["prizes"] = json.loads(d["prizes_json"])
+            out.append(d)
+        return out
 
     def get_history(self, region, station, before_date, limit=365):
         with self.connect() as con:

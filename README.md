@@ -81,3 +81,50 @@ Kết quả MB được thử tuần tự:
 
 Chỉ nhận kết quả khi parser đọc đủ đúng 27 số giải MB.
 Lệnh `/settle` dùng để ép kiểm tra và hiển thị lỗi từng nguồn khi cần.
+
+
+## ĐB64 V3 - Cầu số 4 GĐB
+
+Chữ số thứ 4 từ trái của GĐB 5 số chính là hàng chục của 2 số cuối.
+
+Công thức ĐB64:
+- 25% model ĐB lịch sử
+- 50% cầu số 4 Chẵn/Lẻ + Tài/Xỉu
+- 15% stability 30/60/90 kỳ
+- 10% web/source reliability
+
+Pattern KHÔNG hard-code.
+Bot tự khai thác:
+- chuỗi trạng thái gần đây;
+- nhịp độ dài các đoạn liên tiếp: 1-2-1, 2-2, 3-3, 1-3-1-3, 1-1-1-1...;
+- cầu bệt Chẵn/Lẻ/Tài/Xỉu chỉ khi có >=5 kỳ liên tiếp, rồi tính xác suất tiếp tục/gãy;
+- nhiều độ dài context;
+- support tối thiểu;
+- recency weighting;
+- walk-forward tự kiểm tra 90 kỳ gần nhất.
+
+Nếu một pattern không có đủ mẫu hoặc walk-forward kém, xác suất bị co về 50/50,
+nên dù component "cầu số 4" có trọng số 50%, tín hiệu yếu sẽ gần như trung tính.
+
+
+### Quy ước bệt
+Chỉ gọi là bệt khi cùng trạng thái xuất hiện liên tiếp từ 5 kỳ trở lên.
+Ví dụ: X-X-X-X-X = bệt Xỉu 5 kỳ. Chuỗi 2-4 kỳ chỉ là run/nhịp ngắn.
+
+
+## V3.2 - Chọn 2 yếu tố cầu số 4
+
+Bot chọn:
+1. Một trạng thái mạnh hơn trong Chẵn/Lẻ.
+2. Một trạng thái mạnh hơn trong Xỉu/Tài.
+
+Hai trạng thái này được suy ra từ pattern lịch sử động, không hard-code.
+
+Giao của 2 trạng thái tạo nhóm đầu số ưu tiên:
+- Chẵn + Xỉu -> 0,2,4
+- Lẻ + Xỉu -> 1,3
+- Chẵn + Tài -> 6,8
+- Lẻ + Tài -> 5,7,9
+
+Nhóm đầu số ưu tiên được cộng điểm trong component 50% cầu số 4.
+Nếu confidence của cầu thấp, điểm bị co về trung tính để tránh ép sai.

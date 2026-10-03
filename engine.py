@@ -7,6 +7,7 @@ from history_features import build_history_scores
 from scoring import station_score_bundle, community_scores, aggregate_region, explain
 from selector import select_best_model
 from gpt_layer import GPTReviewer
+from db_digit4 import db_history_and_stability, analyze_digit4
 
 
 class PredictionEngine:
@@ -60,6 +61,14 @@ class PredictionEngine:
             lambda source: self.store.source_reliability(source, region),
         )
 
+        # ĐB64 dùng lịch sử MB liên tục toàn miền (tất cả ngày),
+        # không chỉ cùng "station" của thứ hiện tại.
+        region_history = self.store.get_region_history(
+            region, d.isoformat(), settings.history_days
+        )
+        db_history, db_stability = db_history_and_stability(region_history)
+        digit4 = analyze_digit4(region_history)
+
         song_thu, db64, scores = aggregate_region(
             bundles,
             (cl, cd),
@@ -67,6 +76,11 @@ class PredictionEngine:
             region,
             selected,
             meta,
+            db_context={
+                "history": db_history,
+                "stability": db_stability,
+                "digit4": digit4,
+            },
         )
 
         reasons = explain(song_thu, bundles, scores)
@@ -95,6 +109,8 @@ class PredictionEngine:
                 "model_stats": model_stats,
                 "web_weight": scores["web_weight"],
                 "source_quality": scores.get("source_quality", 0.5),
+                "db_formula": scores.get("db_formula", {}),
+                "db_digit4": scores.get("db_digit4", {}),
             },
             "reasons": reasons,
             "community": {
