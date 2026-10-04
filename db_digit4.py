@@ -171,6 +171,11 @@ def _blet_model(states):
         else:
             break
 
+    # Quy ước người dùng: chỉ >= 5 kỳ liên tiếp mới được gọi là "bệt".
+    # Chuỗi 2-4 kỳ chỉ được xử lý như run/nhịp thông thường.
+    if run_len < 5:
+        return None
+
     same_w = flip_w = 0.0
     support = 0
 

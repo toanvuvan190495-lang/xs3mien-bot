@@ -28,6 +28,79 @@ EXPECTED = [
 ]
 
 
+def _date_variants(d: date):
+    return [
+        d.strftime("%d/%m/%Y"),
+        f"{d.day}/{d.month}/{d.year}",
+        d.strftime("%d-%m-%Y"),
+        f"{d.day}-{d.month}-{d.year}",
+    ]
+
+
+def _has_exact_mb_date_marker(text: str, d: date) -> bool:
+    """
+    Chỉ chấp nhận trang có marker Miền Bắc/XSMB gắn gần đúng ngày yêu cầu.
+    Tránh trang "hôm nay" nhưng block MB thực tế vẫn là ngày hôm qua.
+    """
+    n = _norm(text)
+    dates = [re.escape(x.lower()) for x in _date_variants(d)]
+    ds = "(?:" + "|".join(dates) + ")"
+
+    patterns = [
+        rf"ket qua xo so mien bac.{{0,90}}{ds}",
+        rf"xo so mien bac.{{0,90}}{ds}",
+        rf"xsmb.{{0,90}}{ds}",
+        rf"{ds}.{{0,90}}(?:xo so mien bac|xsmb)",
+    ]
+    return any(re.search(p, n, re.I) for p in patterns)
+
+
+def _valid_mb_entry(entry) -> bool:
+    if not entry:
+        return False
+
+    prizes = list(entry.get("all_prizes", []))
+    special = str(entry.get("special") or "")
+
+    if len(prizes) != 27:
+        return False
+
+    expected_lengths = (
+        [5] * 1
+        + [5] * 1
+        + [5] * 2
+        + [5] * 6
+        + [4] * 4
+        + [4] * 6
+        + [3] * 3
+        + [2] * 4
+    )
+
+    vals = [str(x).strip() for x in prizes]
+
+    if any(not v.isdigit() for v in vals):
+        return False
+
+    if [len(v) for v in vals] != expected_lengths:
+        return False
+
+    # all_prizes phải bắt đầu bằng chính giải ĐB.
+    if not special.isdigit() or len(special) != 5:
+        return False
+
+    if vals[0] != special:
+        return False
+
+    return True
+
+
+def _entry_signature(entry):
+    return (
+        str(entry.get("special") or ""),
+        tuple(str(x) for x in entry.get("all_prizes", [])),
+    )
+
+
 def _matches_label(text_norm: str, patterns):
     return any(re.search(p, text_norm, re.I) for p in patterns)
 
@@ -157,7 +230,7 @@ class FreeResultSource:
             ),
         ]
 
-    def _fetch_one(self, name, url):
+    def _fetch_one(self, name, url, d):
         r = self.s.get(url, timeout=self.timeout, allow_redirects=True)
         r.raise_for_status()
 
@@ -165,18 +238,26 @@ class FreeResultSource:
         for t in soup(["script", "style", "noscript", "svg", "iframe"]):
             t.decompose()
 
-        # 1) DOM/table parser
+        page_text = " ".join(soup.stripped_strings)
+
+        # CỰC KỲ QUAN TRỌNG:
+        # Không parse nếu page chỉ có MB ngày hôm qua hoặc block miền khác.
+        if not _has_exact_mb_date_marker(page_text, d):
+            raise ValueError(
+                f"không thấy block Miền Bắc đúng ngày {d.strftime('%d/%m/%Y')}"
+            )
+
+        # DOM/table parser.
         result = _extract_rows_from_tags(soup)
-        if result:
+        if result and _valid_mb_entry(result):
             return result
 
-        # 2) Sequential text parser
-        text = " ".join(soup.stripped_strings)
-        result = _extract_by_sequential_labels(text)
-        if result:
+        # Sequential fallback.
+        result = _extract_by_sequential_labels(page_text)
+        if result and _valid_mb_entry(result):
             return result
 
-        raise ValueError("chưa nhận diện đủ 27 giải MB")
+        raise ValueError("chưa nhận diện đúng bộ 27 giải MB của ngày yêu cầu")
 
     def fetch(self, region, d, stations):
         if region != "MB":
@@ -184,26 +265,51 @@ class FreeResultSource:
 
         self.last_source = None
         self.last_errors = []
+        candidates = []
 
         for name, url in self._urls(d):
             try:
-                entry = self._fetch_one(name, url)
+                entry = self._fetch_one(name, url, d)
 
-                # Validation cứng.
-                if (
-                    not entry.get("special")
-                    or len(entry.get("all_prizes", [])) != 27
-                ):
-                    raise ValueError("kết quả không đủ 27 giải")
+                if not _valid_mb_entry(entry):
+                    raise ValueError("kết quả không hợp lệ")
 
-                self.last_source = name
-                return {
-                    stations[0]: entry
-                }
+                candidates.append((name, entry))
 
             except Exception as e:
                 self.last_errors.append(
                     f"{name}: {type(e).__name__}: {str(e)[:180]}"
                 )
 
-        return {}
+        if not candidates:
+            return {}
+
+        # Với ngày hiện tại: cần 2 nguồn độc lập có đúng cùng 27 giải.
+        # Điều này tránh parser trộn miền/ngày trong giai đoạn live.
+        if d == date.today():
+            groups = {}
+            for name, entry in candidates:
+                sig = _entry_signature(entry)
+                groups.setdefault(sig, []).append((name, entry))
+
+            best_sig, best_group = max(
+                groups.items(),
+                key=lambda kv: len(kv[1]),
+            )
+
+            if len(best_group) < 2:
+                names = ", ".join(name for name, _ in candidates)
+                self.last_errors.append(
+                    f"đã có {len(candidates)} nguồn ({names}) nhưng chưa đủ 2 nguồn trùng khớp"
+                )
+                return {}
+
+            names = [name for name, _ in best_group]
+            self.last_source = "+".join(names)
+            entry = best_group[0][1]
+            return {stations[0]: entry}
+
+        # Ngày lịch sử: marker ngày + cấu trúc 27 giải hợp lệ là đủ.
+        self.last_source = candidates[0][0]
+        return {stations[0]: candidates[0][1]}
+

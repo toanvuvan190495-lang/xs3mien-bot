@@ -111,6 +111,7 @@ class PredictionEngine:
                 "source_quality": scores.get("source_quality", 0.5),
                 "db_formula": scores.get("db_formula", {}),
                 "db_digit4": scores.get("db_digit4", {}),
+                "db_priority": scores.get("db_priority", {}),
             },
             "reasons": reasons,
             "community": {

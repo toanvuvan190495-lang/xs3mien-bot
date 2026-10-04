@@ -59,6 +59,7 @@ def format_prediction(p):
             "",
             f"✅ Chọn: <b>{picked_parity} + {picked_size}</b>",
             f"🎯 Đầu số ưu tiên: <b>{digits}</b>",
+            f"🔒 ĐB64 bảo đảm đủ toàn bộ số thuộc đầu <b>{digits}</b>",
             f"⚖️ Trong 50% cầu: "
             f"{picked_parity} {_pct(d4.get('parity_weight', 0.5))}"
             f" | {picked_size} {_pct(d4.get('size_weight', 0.5))}",
@@ -83,7 +84,9 @@ def format_prediction(p):
 
     formula = (
         "🧮 <b>ĐB64:</b> 25% lịch sử + 50% cầu số 4 "
-        "+ 15% stability 30/60/90 + 10% web"
+        "+ 15% stability 30/60/90 + 10% web\n"
+        "📌 Sau khi chấm điểm: các đầu được cầu số 4 chọn được giữ đủ, "
+        "slot còn lại mới lấy theo score."
     )
 
     return (

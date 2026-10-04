@@ -158,3 +158,36 @@ Nguyên nhân thường gặp: Railway Volume mới chưa có đủ lịch sử 
 - Nếu startup thấy <120 kỳ, bot tự backfill ở background.
 - Khi chưa đủ dữ liệu, bot KHÔNG chọn mặc định Chẵn + Xỉu.
 - Cầu số 4 chỉ được dùng khi có dữ liệu/pattern thực tế.
+
+
+## V3.5 - Bảo đảm đầy đủ đầu số ưu tiên
+
+Sửa hai vấn đề:
+
+1. "Bệt" chỉ được gọi khi có >=5 kỳ liên tiếp cùng trạng thái.
+   Chuỗi 2-4 kỳ chỉ là run/nhịp.
+
+2. Khi cầu số 4 chọn tổ hợp:
+   - Chẵn + Xỉu -> đầu 0,2,4 -> bảo đảm đủ 00-09,20-29,40-49.
+   - Lẻ + Xỉu -> đầu 1,3 -> bảo đảm đủ 10-19,30-39.
+   - Chẵn + Tài -> đầu 6,8 -> bảo đảm đủ 60-69,80-89.
+   - Lẻ + Tài -> đầu 5,7,9 -> bảo đảm đủ 50-59,70-79,90-99.
+
+Các số đầu ưu tiên được giữ trước trong DB64.
+Các slot còn lại được điền theo tổng score:
+25% history + 50% digit4 + 15% stability + 10% web.
+
+
+## V3.6 - Result Guard
+
+Fix lỗi parser có thể lấy MB ngày hôm qua hoặc trộn bảng miền khác:
+
+- Chỉ chấp nhận trang có marker Miền Bắc/XSMB đúng ngày yêu cầu.
+- Phải đúng cấu trúc 27 giải MB và đúng số chữ số từng giải.
+- `all_prizes[0]` phải chính là giải ĐB.
+- Với kết quả cùng ngày đang live: cần ít nhất 2 nguồn độc lập trả về đúng cùng bộ 27 giải.
+- Scheduler vẫn re-check tới 19:58 kể cả đã settle.
+- Nếu settlement cũ sai, settlement + history + mb_performance của ngày đó được ghi đè bằng kết quả đã xác minh.
+- `/resettle` là alias của `/settle` để ép xác minh lại hôm nay.
+
+Mục tiêu: chậm vài phút còn hơn settle nhầm ngày/trộn miền.

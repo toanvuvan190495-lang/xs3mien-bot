@@ -2,6 +2,32 @@ def last2(x):
     s="".join(ch for ch in str(x) if ch.isdigit())
     return s[-2:].zfill(2) if s else "00"
 
+
+EXPECTED_LENGTHS = (
+    [5] * 1
+    + [5] * 1
+    + [5] * 2
+    + [5] * 6
+    + [4] * 4
+    + [4] * 6
+    + [3] * 3
+    + [2] * 4
+)
+
+
+def _valid_entry(e):
+    vals = [str(x).strip() for x in e.get("all_prizes", [])]
+    special = str(e.get("special") or "").strip()
+
+    return (
+        len(vals) == 27
+        and [len(x) for x in vals] == EXPECTED_LENGTHS
+        and all(x.isdigit() for x in vals)
+        and special.isdigit()
+        and len(special) == 5
+        and vals[0] == special
+    )
+
 def _match_station(station,results):
     for k,v in results.items():
         a=station.lower().replace(".","").strip();b=k.lower().replace(".","").strip()
@@ -15,7 +41,8 @@ def settle(prediction,results):
     matched=0
     for station in prediction["stations"]:
         e=_match_station(station,results)
-        if not e:continue
+        if not e or not _valid_entry(e):
+            continue
         matched+=1
         last=[last2(x) for x in e.get("all_prizes",[])]
         for n in song:

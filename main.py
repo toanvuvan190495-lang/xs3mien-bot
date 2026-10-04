@@ -85,69 +85,87 @@ async def _settle_prediction(p, d, results, notify=True):
     if not complete:
         return False
 
+    existing = performance.get_day(d.isoformat())
+
     await asyncio.to_thread(engine.ingest_results, "MB", d, results)
 
     store.save_settlement(
         d.isoformat(), "MB", results, loto_hits, db_hits
     )
-    store.update_source_performance(
-        d.isoformat(), "MB", results
-    )
+
+    # Chỉ chấm reliability nguồn lần đầu để tránh mỗi lần recheck lại cộng trial.
+    if not existing:
+        store.update_source_performance(
+            d.isoformat(), "MB", results
+        )
 
     record = performance.record(
         d.isoformat(), p, loto_hits, db_hits
     )
 
+    changed = False
+    if existing:
+        changed = (
+            existing.get("special") != record.get("special")
+            or int(existing.get("total_loto_hits", 0))
+               != int(record.get("total_loto_hits", 0))
+            or bool(existing.get("db64_hit", False))
+               != bool(record.get("db64_hit", False))
+        )
+
     if notify:
-        await send(format_result(record))
+        if not existing:
+            await send(format_result(record))
+        elif changed:
+            await send(
+                "♻️ <b>KẾT QUẢ HÔM NAY ĐÃ ĐƯỢC SỬA SAU KHI XÁC MINH NGUỒN</b>\n\n"
+                + format_result(record)
+            )
 
     return True
 
 
 async def settlement_poll():
     d = today()
-    pending = [
-        p for p in store.unsettled_today(d.isoformat())
-        if p.get("region") == "MB"
-    ]
 
-    if not pending:
+    # Luôn recheck prediction hôm nay tới 19:58, kể cả đã settle.
+    # Nếu một nguồn trước đó bị sai/ngày cũ, bản ghi đúng sẽ tự ghi đè.
+    p = store.get_prediction(d.isoformat(), "MB")
+    if not p:
         return
 
-    for p in pending:
-        try:
-            results = await asyncio.to_thread(
-                engine.fetch_results, "MB", d
+    try:
+        results = await asyncio.to_thread(
+            engine.fetch_results, "MB", d
+        )
+
+        source = getattr(engine.results, "last_source", None)
+        errors = getattr(engine.results, "last_errors", [])
+
+        if not results:
+            log.info(
+                "MB exact-date result not verified yet. tried=%s",
+                " | ".join(errors[-4:]) if errors else "unknown"
+            )
+            return
+
+        ok = await _settle_prediction(
+            p, d, results, notify=True
+        )
+
+        if ok:
+            log.info(
+                "MB settlement verified/corrected. source=%s",
+                source or "unknown"
+            )
+        else:
+            log.info(
+                "MB fetched but failed hard settlement validation. source=%s",
+                source or "unknown",
             )
 
-            source = getattr(engine.results, "last_source", None)
-            errors = getattr(engine.results, "last_errors", [])
-
-            if not results:
-                log.info(
-                    "MB result not ready/parsed. tried=%s",
-                    " | ".join(errors[-3:]) if errors else "unknown"
-                )
-                continue
-
-            ok = await _settle_prediction(
-                p, d, results, notify=True
-            )
-
-            if ok:
-                log.info(
-                    "MB settlement completed. source=%s",
-                    source or "unknown"
-                )
-            else:
-                log.info(
-                    "MB result fetched but settlement incomplete. source=%s keys=%s",
-                    source or "unknown",
-                    list(results.keys()),
-                )
-
-        except Exception:
-            log.exception("Settlement failed MB")
+    except Exception:
+        log.exception("Settlement failed MB")
 
 
 async def daily_summary_job():
@@ -237,6 +255,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/mb - phân tích & chốt Miền Bắc ngay\n"
         "/result - xem dự đoán hôm nay\n"
         "/settle - kiểm tra/đối soát kết quả ngay\n"
+        "/resettle - xác minh lại & sửa kết quả hôm nay\n"
         "/today - tổng kết hôm nay\n"
         "/week - tổng kết tuần hiện tại\n"
         "/month - tổng kết tháng hiện tại\n"
@@ -385,9 +404,6 @@ async def cmd_settle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = today()
 
     existing = performance.get_day(d.isoformat())
-    if existing:
-        await reply(update, format_result(existing))
-        return
 
     p = store.get_prediction(d.isoformat(), "MB")
     if not p:
@@ -409,10 +425,15 @@ async def cmd_settle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not results:
             detail = "\n".join(f"• {x}" for x in errors[-3:])
+            note = (
+                "\n\n⚠️ Bản tổng kết đang lưu trước đó chưa được coi là đã xác minh."
+                if existing else ""
+            )
             await reply(
                 update,
-                "⏳ Chưa lấy được bộ KQ MB đầy đủ 27 giải.\n"
+                "⏳ Chưa có bộ KQ MB đúng ngày được ít nhất 2 nguồn xác nhận.\n"
                 f"<b>Nguồn đã thử:</b>\n{detail or 'không có thông tin'}"
+                + note
             )
             return
 
@@ -473,6 +494,7 @@ async def startup():
     application.add_handler(CommandHandler("mb", cmd_mb))
     application.add_handler(CommandHandler("result", cmd_result))
     application.add_handler(CommandHandler("settle", cmd_settle))
+    application.add_handler(CommandHandler("resettle", cmd_settle))
     application.add_handler(CommandHandler("today", cmd_today))
     application.add_handler(CommandHandler("week", cmd_week))
     application.add_handler(CommandHandler("month", cmd_month))
@@ -551,7 +573,7 @@ async def startup():
     scheduler.start()
 
     log.info("XS MB FINAL started")
-    log.info("Commands: /mb /result /settle /today /week /month /history /sync_history /status /test")
+    log.info("Commands: /mb /result /settle /resettle /today /week /month /history /sync_history /status /test")
 
     # Tự xử lý trường hợp Railway vừa restart gần giờ dự đoán/đối soát.
     await startup_recovery()

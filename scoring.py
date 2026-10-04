@@ -286,12 +286,42 @@ def aggregate_region(
     db_norm = normalize(db_final)
     loto_norm = normalize(loto)
 
-    # 64 số điểm cuối cao nhất.
-    db64 = sorted(
-        NUMBERS,
+    # ------------------------------------------------------------
+    # Chọn ĐB64:
+    # Nếu cầu số 4 đã sẵn sàng, TOÀN BỘ số thuộc các đầu ưu tiên
+    # phải có mặt trong dàn 64.
+    #
+    # Ví dụ Lẻ + Xỉu => candidate_digits=[1,3]
+    # => bảo đảm đủ 10-19 và 30-39 (20 số).
+    # Phần slot còn lại lấy theo tổng DB score.
+    # ------------------------------------------------------------
+    preferred_digits = set(
+        int(x) for x in digit4_info.get("candidate_digits", [])
+    ) if digit4_info.get("ready", False) else set()
+
+    preferred = [
+        n for n in NUMBERS
+        if int(n[0]) in preferred_digits
+    ]
+
+    preferred = sorted(
+        preferred,
         key=lambda n: (db_norm[n], history_db[n], stability[n]),
         reverse=True,
-    )[:64]
+    )
+
+    others = [
+        n for n in NUMBERS
+        if n not in set(preferred)
+    ]
+    others = sorted(
+        others,
+        key=lambda n: (db_norm[n], history_db[n], stability[n]),
+        reverse=True,
+    )
+
+    # Candidate heads tối đa 3 đầu = 30 số, nên luôn <=64.
+    db64 = (preferred + others)[:64]
 
     return song_thu, db64, {
         "loto": {n: round(loto_norm[n] * 100, 1) for n in NUMBERS},
@@ -304,6 +334,11 @@ def aggregate_region(
             "web": 0.10,
         },
         "db_digit4": digit4_info,
+        "db_priority": {
+            "preferred_digits": sorted(preferred_digits),
+            "guaranteed_count": len(preferred),
+            "selection_rule": "guarantee_preferred_heads_then_fill_by_score",
+        },
         "selected_model": selected_model,
         "web_weight": round(web_w, 3),
         "active_sources": active,
