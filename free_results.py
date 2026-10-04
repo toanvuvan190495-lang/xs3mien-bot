@@ -154,6 +154,114 @@ def _extract_rows_from_tags(soup: BeautifulSoup):
     }
 
 
+
+def _label_key_from_cell(label: str):
+    n = _norm(label)
+    n = re.sub(r"[\s:|]+", " ", n).strip()
+
+    aliases = {
+        "DB": [
+            r"^db$", r"^giai db$", r"^giai dac biet$",
+            r"^giai db db$", r"^dac biet$",
+        ],
+        "G1": [
+            r"^1$", r"^g1$", r"^g\.?\s*1$", r"^giai nhat$",
+            r"^giai 1$", r"^nhat$",
+        ],
+        "G2": [
+            r"^2$", r"^g2$", r"^g\.?\s*2$", r"^giai nhi$",
+            r"^giai 2$", r"^nhi$",
+        ],
+        "G3": [
+            r"^3$", r"^g3$", r"^g\.?\s*3$", r"^giai ba$",
+            r"^giai 3$", r"^ba$",
+        ],
+        "G4": [
+            r"^4$", r"^g4$", r"^g\.?\s*4$", r"^giai tu$",
+            r"^giai 4$", r"^tu$",
+        ],
+        "G5": [
+            r"^5$", r"^g5$", r"^g\.?\s*5$", r"^giai nam$",
+            r"^giai 5$", r"^nam$",
+        ],
+        "G6": [
+            r"^6$", r"^g6$", r"^g\.?\s*6$", r"^giai sau$",
+            r"^giai 6$", r"^sau$",
+        ],
+        "G7": [
+            r"^7$", r"^g7$", r"^g\.?\s*7$", r"^giai bay$",
+            r"^giai 7$", r"^bay$",
+        ],
+    }
+
+    for key, patterns in aliases.items():
+        if any(re.match(p, n, re.I) for p in patterns):
+            return key
+
+    # Some sites have labels like "Giải Nhất G.1".
+    for key, _, _, patterns in EXPECTED:
+        if _matches_label(n, patterns):
+            return key
+
+    return None
+
+
+def _extract_table_by_cells(soup: BeautifulSoup):
+    """
+    Parser cho bảng có cột đầu là ĐB/1/2/... hoặc G1/G2/...
+    Đây là format phổ biến của xoso.com.vn, ketqua.vn, sxmb.com.
+    """
+    expected = {
+        key: (count, digits)
+        for key, count, digits, _ in EXPECTED
+    }
+
+    found = {}
+
+    for tr in soup.find_all("tr"):
+        cells = tr.find_all(["th", "td"], recursive=False)
+        if not cells:
+            cells = tr.find_all(["th", "td"])
+        if len(cells) < 2:
+            continue
+
+        label_text = " ".join(cells[0].stripped_strings)
+        key = _label_key_from_cell(label_text)
+        if not key or key in found:
+            continue
+
+        count, digits = expected[key]
+
+        data_text = " ".join(
+            " ".join(c.stripped_strings)
+            for c in cells[1:]
+        )
+        nums = re.findall(
+            rf"(?<!\d)(\d{{{digits}}})(?!\d)",
+            data_text,
+        )
+
+        if len(nums) >= count:
+            found[key] = nums[:count]
+
+    if len(found) != 8:
+        return None
+
+    prizes = []
+    for key, count, _, _ in EXPECTED:
+        vals = found.get(key, [])
+        if len(vals) != count:
+            return None
+        prizes.extend(vals)
+
+    entry = {
+        "special": found["DB"][0],
+        "all_prizes": prizes,
+    }
+
+    return entry if _valid_mb_entry(entry) else None
+
+
 def _extract_by_sequential_labels(text: str):
     """
     Fallback khi website không dùng table rows.
@@ -221,12 +329,24 @@ class FreeResultSource:
                 f"https://www.minhngoc.net.vn/ket-qua-xo-so/mien-bac/{dd}-{mm}-{yyyy}.html",
             ),
             (
-                "xsmn_mobi",
-                f"https://xsmn.mobi/xsmb-{d.day}-{d.month}-{d.year}.html",
-            ),
-            (
                 "xoso_com_vn",
                 f"https://xoso.com.vn/xsmb-{dd}-{mm}-{yyyy}.html",
+            ),
+            (
+                "xoso_com_vn_1day",
+                "https://xoso.com.vn/xsmb-1-ngay.html",
+            ),
+            (
+                "ketqua_vn",
+                f"https://ketqua.vn/xsmb/{dd}-{mm}-{yyyy}",
+            ),
+            (
+                "sxmb_com",
+                f"https://sxmb.com/xo-so-mien-bac-ngay-{dd}-{mm}-{yyyy}.html",
+            ),
+            (
+                "xsmn_mobi",
+                f"https://xsmn.mobi/xsmb-{d.day}-{d.month}-{d.year}.html",
             ),
         ]
 
@@ -247,12 +367,17 @@ class FreeResultSource:
                 f"không thấy block Miền Bắc đúng ngày {d.strftime('%d/%m/%Y')}"
             )
 
-        # DOM/table parser.
+        # 1) Strict table/cell parser.
+        result = _extract_table_by_cells(soup)
+        if result and _valid_mb_entry(result):
+            return result
+
+        # 2) Generic DOM/table parser.
         result = _extract_rows_from_tags(soup)
         if result and _valid_mb_entry(result):
             return result
 
-        # Sequential fallback.
+        # 3) Sequential fallback.
         result = _extract_by_sequential_labels(page_text)
         if result and _valid_mb_entry(result):
             return result
@@ -300,7 +425,7 @@ class FreeResultSource:
             if len(best_group) < 2:
                 names = ", ".join(name for name, _ in candidates)
                 self.last_errors.append(
-                    f"đã có {len(candidates)} nguồn ({names}) nhưng chưa đủ 2 nguồn trùng khớp"
+                    f"đã đọc được {len(candidates)} nguồn ({names}) nhưng chưa có ít nhất 2 nguồn cùng một bộ 27 giải"
                 )
                 return {}
 

@@ -191,3 +191,24 @@ Fix lỗi parser có thể lấy MB ngày hôm qua hoặc trộn bảng miền k
 - `/resettle` là alias của `/settle` để ép xác minh lại hôm nay.
 
 Mục tiêu: chậm vài phút còn hơn settle nhầm ngày/trộn miền.
+
+
+## V3.7 - Multi-source result parser
+
+Mở rộng nguồn xác minh kết quả MB:
+- Minh Ngọc
+- xoso.com.vn trang ngày cụ thể
+- xoso.com.vn trang 1 ngày
+- ketqua.vn
+- sxmb.com
+- xsmn.mobi
+
+Parser mới hỗ trợ:
+- hàng bảng kiểu `ĐB / 1 / 2 / ... / 7`;
+- hàng `G1 / G2 / ...`;
+- nhãn `Giải Nhất / Giải Nhì / ...`;
+- kiểm tra đúng cấu trúc 27 giải;
+- kiểm tra đúng ngày MB;
+- với ngày hiện tại: vẫn bắt buộc ít nhất 2 nguồn trùng khớp 100%.
+
+Không hạ chuẩn xác minh về 1 nguồn.
