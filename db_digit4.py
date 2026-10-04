@@ -225,6 +225,8 @@ def _predict_property_core(states):
             "p_same": 0.5,
             "confidence": 0.0,
             "evidence": [],
+            "ready": False,
+            "reason": f"chỉ có {len(states)} kỳ, cần tối thiểu 20 kỳ",
         }
 
     evidence = []
@@ -248,6 +250,8 @@ def _predict_property_core(states):
             "p_same": 0.5,
             "confidence": 0.0,
             "evidence": [],
+            "ready": False,
+            "reason": "chưa có pattern đủ số mẫu",
         }
 
     num = den = 0.0
@@ -278,6 +282,8 @@ def _predict_property_core(states):
         "p_same": p_same,
         "confidence": confidence,
         "evidence": evidence[:5],
+        "ready": True,
+        "reason": "",
     }
 
 
@@ -388,6 +394,9 @@ def analyze_property(states, labels):
         "wf_accuracy": wf["accuracy"],
         "wf_trials": wf["trials"],
         "evidence": pretty_evidence[:4],
+        "ready": bool(core.get("ready", False)),
+        "reason": core.get("reason", ""),
+        "sample": len(states),
     }
 
 
@@ -457,25 +466,36 @@ def analyze_digit4(rows):
     pp = parity.get("probabilities", {})
     sp = size.get("probabilities", {})
 
-    # Mỗi hệ nhị phân chọn đúng 1 trạng thái mạnh hơn theo cầu lịch sử.
-    parity_pick = "C" if pp.get("C", 0.5) >= pp.get("L", 0.5) else "L"
-    size_pick = "X" if sp.get("X", 0.5) >= sp.get("T", 0.5) else "T"
+    # Chỉ chọn khi hệ cầu đã có dữ liệu/pattern thật và confidence đủ tối thiểu.
+    parity_ready = bool(parity.get("ready")) and parity.get("confidence", 0.0) >= 0.03
+    size_ready = bool(size.get("ready")) and size.get("confidence", 0.0) >= 0.03
 
-    parity_pick_prob = float(pp.get(parity_pick, 0.5))
-    size_pick_prob = float(sp.get(size_pick, 0.5))
+    if parity_ready:
+        parity_pick = "C" if pp.get("C", 0.5) > pp.get("L", 0.5) else "L"
+        parity_pick_prob = float(pp.get(parity_pick, 0.5))
+    else:
+        parity_pick = None
+        parity_pick_prob = 0.5
+
+    if size_ready:
+        size_pick = "X" if sp.get("X", 0.5) > sp.get("T", 0.5) else "T"
+        size_pick_prob = float(sp.get(size_pick, 0.5))
+    else:
+        size_pick = None
+        size_pick_prob = 0.5
 
     # Xếp độ mạnh hai yếu tố để hiển thị.
     chosen_factors = [
         {
             "code": parity_pick,
-            "label": {"C": "Chẵn", "L": "Lẻ"}[parity_pick],
+            "label": {"C": "Chẵn", "L": "Lẻ"}.get(parity_pick, "Chưa đủ dữ liệu"),
             "probability": parity_pick_prob,
             "confidence": parity.get("confidence", 0.0),
             "system": "parity",
         },
         {
             "code": size_pick,
-            "label": {"X": "Xỉu", "T": "Tài"}[size_pick],
+            "label": {"X": "Xỉu", "T": "Tài"}.get(size_pick, "Chưa đủ dữ liệu"),
             "probability": size_pick_prob,
             "confidence": size.get("confidence", 0.0),
             "system": "size",
@@ -488,11 +508,12 @@ def analyze_digit4(rows):
 
     # Giao của 2 điều kiện => đầu số chữ số thứ 4.
     candidate_digits = []
-    for d in range(10):
-        parity_ok = (d % 2 == 0) if parity_pick == "C" else (d % 2 == 1)
-        size_ok = (d <= 4) if size_pick == "X" else (d >= 5)
-        if parity_ok and size_ok:
-            candidate_digits.append(d)
+    if parity_pick is not None and size_pick is not None:
+        for d in range(10):
+            parity_ok = (d % 2 == 0) if parity_pick == "C" else (d % 2 == 1)
+            size_ok = (d <= 4) if size_pick == "X" else (d >= 5)
+            if parity_ok and size_ok:
+                candidate_digits.append(d)
 
     # 50% cầu số 4:
     # - số khớp CẢ HAI trạng thái được điểm mạnh nhất;
@@ -525,17 +546,22 @@ def analyze_digit4(rows):
     for n in NUMBERS:
         d = int(n[0])
 
-        parity_match = ((d % 2 == 0) and parity_pick == "C") or (
-            (d % 2 == 1) and parity_pick == "L"
+        parity_match = False if parity_pick is None else (
+            ((d % 2 == 0) and parity_pick == "C") or
+            ((d % 2 == 1) and parity_pick == "L")
         )
-        size_match = ((d <= 4) and size_pick == "X") or (
-            (d >= 5) and size_pick == "T"
+        size_match = False if size_pick is None else (
+            ((d <= 4) and size_pick == "X") or
+            ((d >= 5) and size_pick == "T")
         )
 
-        # Base score theo từng yếu tố thắng.
-        component = 0.0
-        component += wp * (1.0 if parity_match else 0.0)
-        component += ws * (1.0 if size_match else 0.0)
+        # Khi chưa đủ dữ liệu cho một trong hai hệ thì giữ component trung tính.
+        if parity_pick is None or size_pick is None:
+            component = 0.5
+        else:
+            component = 0.0
+            component += wp * (1.0 if parity_match else 0.0)
+            component += ws * (1.0 if size_match else 0.0)
 
         # Intersection bonus: đúng cả 2 điều kiện là nhóm đầu ưu tiên nhất.
         if parity_match and size_match:
@@ -562,16 +588,17 @@ def analyze_digit4(rows):
         "size": size,
 
         "parity_pick": parity_pick,
-        "parity_pick_label": {"C": "Chẵn", "L": "Lẻ"}[parity_pick],
+        "parity_pick_label": {"C": "Chẵn", "L": "Lẻ"}.get(parity_pick, "Chưa đủ dữ liệu"),
         "parity_pick_prob": parity_pick_prob,
 
         "size_pick": size_pick,
-        "size_pick_label": {"X": "Xỉu", "T": "Tài"}[size_pick],
+        "size_pick_label": {"X": "Xỉu", "T": "Tài"}.get(size_pick, "Chưa đủ dữ liệu"),
         "size_pick_prob": size_pick_prob,
 
         "chosen_factors": chosen_factors,
         "candidate_digits": candidate_digits,
-        "candidate_digits_text": "".join(str(x) for x in candidate_digits),
+        "candidate_digits_text": "".join(str(x) for x in candidate_digits) if candidate_digits else "—",
+        "ready": parity_pick is not None and size_pick is not None,
 
         "parity_weight": wp,
         "size_weight": ws,

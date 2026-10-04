@@ -16,6 +16,7 @@ from engine import PredictionEngine
 from settlement import settle
 from messages import format_prediction
 from mb_performance import MBPerformance, format_result, format_daily, format_weekly, format_monthly
+from history_bootstrap import history_count, sync_mb_history
 
 
 logging.basicConfig(
@@ -169,6 +170,40 @@ async def monthly_summary_job():
     await send(format_monthly(performance.month(d)))
 
 
+
+async def ensure_history_background():
+    try:
+        count = history_count(store, today().isoformat())
+        log.info("MB history rows before startup sync: %s", count)
+
+        if count >= 120:
+            return
+
+        await send(
+            f"📚 Lịch sử MB hiện có <b>{count} kỳ</b>. "
+            "Bot đang tự đồng bộ thêm lịch sử để soi cầu số 4."
+        )
+
+        result = await asyncio.to_thread(
+            sync_mb_history,
+            store,
+            engine.results,
+            240,
+            0.12,
+        )
+
+        log.info("History sync result: %s", result)
+
+        await send(
+            "✅ Đồng bộ lịch sử MB xong.\n"
+            f"Lấy được: <b>{result['ok']}</b> kỳ\n"
+            f"Tổng lịch sử hiện có: <b>{result['count']}</b> kỳ"
+        )
+
+    except Exception:
+        log.exception("Background history sync failed")
+
+
 async def startup_recovery():
     """
     Nếu Railway vừa restart gần giờ chạy:
@@ -205,6 +240,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/today - tổng kết hôm nay\n"
         "/week - tổng kết tuần hiện tại\n"
         "/month - tổng kết tháng hiện tại\n"
+        "/history - kiểm tra lịch sử MB\n"
+        "/sync_history - đồng bộ lịch sử MB\n"
         "/status - trạng thái bot\n"
         "/test - kiểm tra Telegram"
     )
@@ -216,6 +253,56 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ <b>Telegram hoạt động bình thường.</b>\n"
         f"⏰ {now().strftime('%H:%M:%S %d/%m/%Y')}"
     )
+
+
+
+async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    count = history_count(store, today().isoformat())
+    rows = store.get_region_history("MB", today().isoformat(), 5)
+    dates = [r.get("draw_date", "?") for r in rows]
+
+    await reply(
+        update,
+        "📚 <b>LỊCH SỬ MIỀN BẮC</b>\n"
+        f"Tổng số kỳ: <b>{count}</b>\n"
+        f"5 kỳ gần nhất: {', '.join(dates) if dates else 'chưa có'}\n\n"
+        + (
+            "✅ Đủ dữ liệu để soi cầu số 4."
+            if count >= 120
+            else "⚠️ Chưa đủ dữ liệu. Dùng /sync_history."
+        )
+    )
+
+
+async def cmd_sync_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(
+        update,
+        "📚 Bắt đầu đồng bộ khoảng 240 ngày lịch sử MB. "
+        "Có thể mất vài phút."
+    )
+
+    try:
+        result = await asyncio.to_thread(
+            sync_mb_history,
+            store,
+            engine.results,
+            240,
+            0.12,
+        )
+
+        await reply(
+            update,
+            "✅ <b>ĐỒNG BỘ XONG</b>\n"
+            f"Lấy được: <b>{result['ok']}</b> kỳ\n"
+            f"Không lấy được: {result['miss']} kỳ\n"
+            f"Tổng trong DB: <b>{result['count']}</b> kỳ"
+        )
+    except Exception as e:
+        log.exception("Manual history sync failed")
+        await reply(
+            update,
+            f"❌ Đồng bộ lỗi: <code>{type(e).__name__}: {str(e)[:400]}</code>"
+        )
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -389,6 +476,8 @@ async def startup():
     application.add_handler(CommandHandler("today", cmd_today))
     application.add_handler(CommandHandler("week", cmd_week))
     application.add_handler(CommandHandler("month", cmd_month))
+    application.add_handler(CommandHandler("history", cmd_history))
+    application.add_handler(CommandHandler("sync_history", cmd_sync_history))
 
     scheduler = AsyncIOScheduler(timezone=TZ)
 
@@ -462,10 +551,11 @@ async def startup():
     scheduler.start()
 
     log.info("XS MB FINAL started")
-    log.info("Commands: /mb /result /settle /today /week /month /status /test")
+    log.info("Commands: /mb /result /settle /today /week /month /history /sync_history /status /test")
 
     # Tự xử lý trường hợp Railway vừa restart gần giờ dự đoán/đối soát.
     await startup_recovery()
+    asyncio.create_task(ensure_history_background())
 
     try:
         while True:

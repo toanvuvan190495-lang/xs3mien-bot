@@ -147,3 +147,14 @@ Tổng kết tháng gồm:
 - lãi/lỗ STL;
 - lãi/lỗ ĐB64;
 - lãi/lỗ tổng.
+
+
+## V3.4 - Sửa trường hợp 50/50
+
+Nguyên nhân thường gặp: Railway Volume mới chưa có đủ lịch sử MB.
+
+- `/history`: kiểm tra số kỳ đang có.
+- `/sync_history`: đồng bộ khoảng 240 ngày.
+- Nếu startup thấy <120 kỳ, bot tự backfill ở background.
+- Khi chưa đủ dữ liệu, bot KHÔNG chọn mặc định Chẵn + Xỉu.
+- Cầu số 4 chỉ được dùng khi có dữ liệu/pattern thực tế.

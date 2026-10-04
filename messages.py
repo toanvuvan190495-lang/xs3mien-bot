@@ -50,17 +50,27 @@ def format_prediction(p):
     picked_size = d4.get("size_pick_label", "-")
     digits = d4.get("candidate_digits_text", "-")
 
-    d4_lines = [
-        "🔢 <b>CẦU SỐ 4 GIẢI ĐB</b>",
-        f"Chẵn {_pct(pp.get('C', 0.5))} | Lẻ {_pct(pp.get('L', 0.5))}",
-        f"Xỉu {_pct(sp.get('X', 0.5))} | Tài {_pct(sp.get('T', 0.5))}",
-        "",
-        f"✅ Chọn: <b>{picked_parity} + {picked_size}</b>",
-        f"🎯 Đầu số ưu tiên: <b>{digits}</b>",
-        f"⚖️ Trong 50% cầu: "
-        f"{picked_parity} {_pct(d4.get('parity_weight', 0.5))}"
-        f" | {picked_size} {_pct(d4.get('size_weight', 0.5))}",
-    ]
+    if d4.get("ready", False):
+        d4_lines = [
+            "🔢 <b>CẦU SỐ 4 GIẢI ĐB</b>",
+            f"Chẵn {_pct(pp.get('C', 0.5))} | Lẻ {_pct(pp.get('L', 0.5))}",
+            f"Xỉu {_pct(sp.get('X', 0.5))} | Tài {_pct(sp.get('T', 0.5))}",
+            f"📚 Lịch sử dùng: {d4.get('sample', 0)} kỳ",
+            "",
+            f"✅ Chọn: <b>{picked_parity} + {picked_size}</b>",
+            f"🎯 Đầu số ưu tiên: <b>{digits}</b>",
+            f"⚖️ Trong 50% cầu: "
+            f"{picked_parity} {_pct(d4.get('parity_weight', 0.5))}"
+            f" | {picked_size} {_pct(d4.get('size_weight', 0.5))}",
+        ]
+    else:
+        d4_lines = [
+            "🔢 <b>CẦU SỐ 4 GIẢI ĐB</b>",
+            f"📚 Lịch sử dùng: <b>{d4.get('sample', 0)} kỳ</b>",
+            "⚠️ <b>CHƯA ĐỦ DỮ LIỆU SOI CẦU SỐ 4</b>",
+            "Không chọn mặc định Chẵn/Xỉu và không ép đầu 024.",
+            "Dùng /history hoặc /sync_history.",
+        ]
 
     p_lines = _pattern_lines(parity, 2)
     s_lines = _pattern_lines(size, 2)
