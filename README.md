@@ -212,3 +212,19 @@ Parser mới hỗ trợ:
 - với ngày hiện tại: vẫn bắt buộc ít nhất 2 nguồn trùng khớp 100%.
 
 Không hạ chuẩn xác minh về 1 nguồn.
+
+
+## V3.8 - History Maintenance
+
+Fix lịch sử bị đứng sau khi đã có 120/240 kỳ:
+
+- Khi settlement thành công: vẫn lưu kết quả ngày hiện tại ngay vào `draw_history`.
+- Startup: luôn kiểm tra 10 ngày gần nhất và tự vá ngày nào thiếu.
+- 00:10 mỗi ngày: tự chạy job vá 10 ngày gần nhất.
+- Full backfill 240 ngày chỉ dùng khi tổng history còn ít.
+- `/history`: hiển thị coverage 10 ngày gần nhất bằng ✅/❌.
+- `/repair_history`: ép vá 10 ngày gần nhất.
+- `/sync_history`: vẫn dùng để quét khoảng 240 ngày.
+
+Nhờ đó tổng số history có thể >240 và tiếp tục tăng theo từng ngày,
+thay vì dừng ở đúng số kỳ của lần bootstrap ban đầu.

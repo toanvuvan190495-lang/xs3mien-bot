@@ -16,7 +16,12 @@ from engine import PredictionEngine
 from settlement import settle
 from messages import format_prediction
 from mb_performance import MBPerformance, format_result, format_daily, format_weekly, format_monthly
-from history_bootstrap import history_count, sync_mb_history
+from history_bootstrap import (
+    history_count,
+    sync_mb_history,
+    recent_history_status,
+    repair_recent_history,
+)
 
 
 logging.basicConfig(
@@ -190,16 +195,41 @@ async def monthly_summary_job():
 
 
 async def ensure_history_background():
+    """
+    1) Luôn vá các ngày gần đây bị thiếu.
+    2) Chỉ full-backfill 240 ngày nếu tổng lịch sử còn quá ít.
+    """
     try:
+        recent = await asyncio.to_thread(
+            repair_recent_history,
+            store,
+            engine.results,
+            10,
+            False,
+            0.10,
+        )
+
+        if recent["repaired"]:
+            log.info(
+                "Recent MB history repaired: %s",
+                ", ".join(recent["repaired"]),
+            )
+
+        if recent["failed"]:
+            log.info(
+                "Recent MB history still missing: %s",
+                ", ".join(recent["failed"]),
+            )
+
         count = history_count(store, today().isoformat())
-        log.info("MB history rows before startup sync: %s", count)
+        log.info("MB history rows after recent repair: %s", count)
 
         if count >= 120:
             return
 
         await send(
             f"📚 Lịch sử MB hiện có <b>{count} kỳ</b>. "
-            "Bot đang tự đồng bộ thêm lịch sử để soi cầu số 4."
+            "Bot đang tự đồng bộ thêm lịch sử."
         )
 
         result = await asyncio.to_thread(
@@ -210,7 +240,7 @@ async def ensure_history_background():
             0.12,
         )
 
-        log.info("History sync result: %s", result)
+        log.info("History full sync result: %s", result)
 
         await send(
             "✅ Đồng bộ lịch sử MB xong.\n"
@@ -219,7 +249,38 @@ async def ensure_history_background():
         )
 
     except Exception:
-        log.exception("Background history sync failed")
+        log.exception("Background history maintenance failed")
+
+
+async def recent_history_repair_job():
+    """
+    Chạy 00:10 hằng ngày để vá các ngày gần nhất.
+    Lúc này kết quả hôm qua đã là historical result, dễ fetch ổn định hơn.
+    """
+    try:
+        result = await asyncio.to_thread(
+            repair_recent_history,
+            store,
+            engine.results,
+            10,
+            False,
+            0.10,
+        )
+
+        if result["repaired"]:
+            log.info(
+                "Daily history repair added: %s",
+                ", ".join(result["repaired"]),
+            )
+
+        if result["failed"]:
+            log.warning(
+                "Daily history repair still missing: %s",
+                ", ".join(result["failed"]),
+            )
+
+    except Exception:
+        log.exception("Daily recent history repair failed")
 
 
 async def startup_recovery():
@@ -260,7 +321,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/week - tổng kết tuần hiện tại\n"
         "/month - tổng kết tháng hiện tại\n"
         "/history - kiểm tra lịch sử MB\n"
-        "/sync_history - đồng bộ lịch sử MB\n"
+        "/sync_history - đồng bộ khoảng 240 ngày lịch sử MB\n"
+        "/repair_history - vá 10 ngày gần nhất bị thiếu\n"
         "/status - trạng thái bot\n"
         "/test - kiểm tra Telegram"
     )
@@ -280,15 +342,32 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = store.get_region_history("MB", today().isoformat(), 5)
     dates = [r.get("draw_date", "?") for r in rows]
 
+    status = recent_history_status(
+        store,
+        lookback_days=10,
+        include_today=False,
+    )
+    missing = [x["date"] for x in status if not x["exists"]]
+
+    coverage = " ".join(
+        f"{x['date'][5:]}{'✅' if x['exists'] else '❌'}"
+        for x in status
+    )
+
     await reply(
         update,
         "📚 <b>LỊCH SỬ MIỀN BẮC</b>\n"
-        f"Tổng số kỳ: <b>{count}</b>\n"
-        f"5 kỳ gần nhất: {', '.join(dates) if dates else 'chưa có'}\n\n"
+        f"Tổng số kỳ đã lưu: <b>{count}</b>\n"
+        f"5 kỳ gần nhất trong DB: "
+        f"{', '.join(dates) if dates else 'chưa có'}\n\n"
+        f"<b>10 ngày gần nhất:</b>\n{coverage}\n\n"
         + (
-            "✅ Đủ dữ liệu để soi cầu số 4."
-            if count >= 120
-            else "⚠️ Chưa đủ dữ liệu. Dùng /sync_history."
+            "✅ Không có ngày thiếu trong 10 ngày gần nhất."
+            if not missing
+            else
+            "⚠️ Đang thiếu: <b>"
+            + ", ".join(missing)
+            + "</b>\nDùng /repair_history để vá ngay."
         )
     )
 
@@ -324,6 +403,47 @@ async def cmd_sync_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+
+async def cmd_repair_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(
+        update,
+        "🛠 Đang kiểm tra và vá lịch sử MB 10 ngày gần nhất..."
+    )
+
+    try:
+        result = await asyncio.to_thread(
+            repair_recent_history,
+            store,
+            engine.results,
+            10,
+            False,
+            0.10,
+        )
+
+        repaired = result.get("repaired", [])
+        failed = result.get("failed", [])
+
+        lines = [
+            "🛠 <b>VÁ LỊCH SỬ MB XONG</b>",
+            f"Tổng history: <b>{result.get('count', 0)}</b> kỳ",
+            "",
+            "✅ Đã bổ sung: "
+            + (", ".join(repaired) if repaired else "không có"),
+            "❌ Vẫn thiếu: "
+            + (", ".join(failed) if failed else "không có"),
+        ]
+
+        await reply(update, "\n".join(lines))
+
+    except Exception as e:
+        log.exception("Manual recent history repair failed")
+        await reply(
+            update,
+            f"❌ Vá lịch sử lỗi: "
+            f"<code>{type(e).__name__}: {str(e)[:400]}</code>"
+        )
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         d = today()
@@ -340,6 +460,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"GPT reviewer: {'✅ ON' if settings.use_gpt else '⏸ OFF'}",
             "",
             "📅 <b>LỊCH TỰ ĐỘNG</b>",
+            "00:10 → Vá history 10 ngày gần nhất",
             "17:15 → Chốt MB",
             "18:00–19:58 → Dò kết quả mỗi 2 phút",
             "Có KQ → báo ngay",
@@ -500,10 +621,22 @@ async def startup():
     application.add_handler(CommandHandler("month", cmd_month))
     application.add_handler(CommandHandler("history", cmd_history))
     application.add_handler(CommandHandler("sync_history", cmd_sync_history))
+    application.add_handler(CommandHandler("repair_history", cmd_repair_history))
 
     scheduler = AsyncIOScheduler(timezone=TZ)
 
     mb_time = PREDICT_CRON["MB"]
+
+    scheduler.add_job(
+        recent_history_repair_job,
+        "cron",
+        hour=0,
+        minute=10,
+        id="history_MB_recent_repair",
+        replace_existing=True,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
 
     scheduler.add_job(
         predict_job,
@@ -573,7 +706,7 @@ async def startup():
     scheduler.start()
 
     log.info("XS MB FINAL started")
-    log.info("Commands: /mb /result /settle /resettle /today /week /month /history /sync_history /status /test")
+    log.info("Commands: /mb /result /settle /resettle /today /week /month /history /sync_history /repair_history /status /test")
 
     # Tự xử lý trường hợp Railway vừa restart gần giờ dự đoán/đối soát.
     await startup_recovery()
