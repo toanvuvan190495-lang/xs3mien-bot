@@ -208,27 +208,58 @@ def aggregate_region(
     selected_model="mean",
     community_meta=None,
     db_context=None,
+    loto_context=None,
 ):
     meta = community_meta or {}
     active = int(meta.get("active_sources", 0))
 
     # ------------------------------------------------------------
-    # SONG THỦ: giữ logic hiện tại, không liên quan ĐB64 mới.
+    # SONG THỦ:
+    # V3.9 có thể nhận score/pair đã tính từ toàn bộ MB 90 ngày
+    # trong loto_cau90.py. Khi có context này, KHÔNG dùng station/thứ
+    # và KHÔNG trộn web lần thứ hai.
     # ------------------------------------------------------------
-    loto = score_model(selected_model, station_bundles)
-    web_w = min(_web_weight(active, meta), community_max_weight)
+    if loto_context and loto_context.get("scores"):
+        loto = normalize(loto_context["scores"])
+        web_w = min(
+            float(loto_context.get("web_weight", 0.0)),
+            community_max_weight,
+        )
+        song_thu = list(loto_context.get("song_thu", []))[:2]
+        if len(song_thu) < 2:
+            song_thu = sorted(
+                NUMBERS, key=loto.get, reverse=True
+            )[:2]
 
-    if community and web_w > 0:
-        cl = normalize(community[0])
-        for n in NUMBERS:
-            loto[n] = (1 - web_w) * loto[n] + web_w * cl.get(n, 0.0)
+        gate = {
+            "engine": "cau90_mb",
+            "history_rows": int(
+                (loto_context.get("meta") or {}).get("history_rows", 0)
+            ),
+            "trusted_sources": [
+                x.get("source")
+                for x in loto_context.get("trusted_sources", [])
+            ],
+            "pair_meta": loto_context.get("pair_meta", {}),
+        }
+    else:
+        loto = score_model(selected_model, station_bundles)
+        web_w = min(_web_weight(active, meta), community_max_weight)
 
-    song_thu, gate = _choose_pair(
-        loto,
-        meta.get("loto_agreement", {}),
-        meta.get("loto_weighted_agreement", {}),
-        active,
-    )
+        if community and web_w > 0:
+            cl = normalize(community[0])
+            for n in NUMBERS:
+                loto[n] = (
+                    (1 - web_w) * loto[n]
+                    + web_w * cl.get(n, 0.0)
+                )
+
+        song_thu, gate = _choose_pair(
+            loto,
+            meta.get("loto_agreement", {}),
+            meta.get("loto_weighted_agreement", {}),
+            active,
+        )
 
     # ------------------------------------------------------------
     # ĐB64 V3 — đúng trọng số người dùng chốt:

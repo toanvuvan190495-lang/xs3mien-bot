@@ -228,3 +228,42 @@ Fix lịch sử bị đứng sau khi đã có 120/240 kỳ:
 
 Nhờ đó tổng số history có thể >240 và tiếp tục tăng theo từng ngày,
 thay vì dừng ở đúng số kỳ của lần bootstrap ban đầu.
+
+
+## V3.9 - 365-day history + Song thủ Cầu 90
+
+Chỉ thay đổi 3 phần so với V3.8:
+
+### 1. Full history sync = 365 ngày
+- `/sync_history` quét/bổ sung 365 ngày gần nhất.
+- Startup nếu history còn dưới khoảng 330 kỳ sẽ backfill 365 ngày.
+- Không xóa dữ liệu cũ.
+- `draw_history` không bị giới hạn 365 dòng; mỗi ngày tiếp tục tăng thêm.
+
+### 2. Kết quả mới tự lưu vào data
+Sau khi kết quả MB đúng ngày được Result Guard xác minh:
+`_settle_prediction -> engine.ingest_results -> store.upsert_draw`
+sẽ ghi ngay kỳ mới vào SQLite/Volume.
+Job 00:10 vẫn giữ nguyên để vá 10 ngày gần nhất nếu có ngày bị bỏ lỡ.
+
+### 3. Song thủ MB = Cầu 90 toàn miền
+Không còn chia lịch sử theo station/thứ.
+
+Dùng đúng 90 kỳ/ngày MB gần nhất trong SQLite/Volume:
+- 38% xu hướng lô đa cửa sổ 7/14/30/60/90, ưu tiên gần đây;
+- 32% pattern/cầu nhịp động 2..6 kỳ, tự học pattern đã từng xuất hiện;
+- 15% gap-hazard thực nghiệm, không dùng tư duy "gan lâu chắc về";
+- 15% stability 14/30/60/90.
+
+Sau history core mới kết hợp forum/web:
+- chỉ forum/community/data/statistics;
+- nguồn được cân theo reliability do bot tự chấm qua kết quả thật;
+- nguồn có đủ mẫu nhưng performance thấp bị loại khỏi lớp Song thủ;
+- nhiều nguồn độc lập cùng chốt được cộng consensus;
+- web/forum tối đa 25%, history vẫn là nền chính.
+
+Cặp song thủ cuối còn được đánh giá lại theo hiệu quả của chính cặp
+trên 30/60/90 ngày, ưu tiên 30 ngày gần nhất.
+
+ĐB64, cầu số 4, Result Guard, lịch tự động, daily/weekly/monthly summary,
+các lệnh và cách tính tiền giữ nguyên V3.8.

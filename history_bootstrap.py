@@ -10,7 +10,7 @@ def history_count(store, before_date: str) -> int:
     return len(store.get_region_history("MB", before_date, 1000))
 
 
-def sync_mb_history(store, source, days=240, sleep_seconds=0.12):
+def sync_mb_history(store, source, days=365, sleep_seconds=0.12):
     """
     Backfill lịch sử MB vào SQLite/Volume.
     Chạy lại nhiều lần vẫn an toàn vì draw_history dùng upsert.

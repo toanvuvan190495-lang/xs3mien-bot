@@ -93,6 +93,10 @@ async def _settle_prediction(p, d, results, notify=True):
     existing = performance.get_day(d.isoformat())
 
     await asyncio.to_thread(engine.ingest_results, "MB", d, results)
+    log.info(
+        "Saved verified MB draw into draw_history/data: %s",
+        d.isoformat(),
+    )
 
     store.save_settlement(
         d.isoformat(), "MB", results, loto_hits, db_hits
@@ -197,7 +201,7 @@ async def monthly_summary_job():
 async def ensure_history_background():
     """
     1) Luôn vá các ngày gần đây bị thiếu.
-    2) Chỉ full-backfill 240 ngày nếu tổng lịch sử còn quá ít.
+    2) Chỉ full-backfill 365 ngày nếu tổng lịch sử còn quá ít.
     """
     try:
         recent = await asyncio.to_thread(
@@ -224,7 +228,9 @@ async def ensure_history_background():
         count = history_count(store, today().isoformat())
         log.info("MB history rows after recent repair: %s", count)
 
-        if count >= 120:
+        # V3.9: nếu mới có 240-ish kỳ cũ thì mở rộng lịch sử lên gần 365.
+        # Không yêu cầu phải đủ đúng 365 vì website có thể thiếu một vài ngày.
+        if count >= 330:
             return
 
         await send(
@@ -236,7 +242,7 @@ async def ensure_history_background():
             sync_mb_history,
             store,
             engine.results,
-            240,
+            365,
             0.12,
         )
 
@@ -321,7 +327,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/week - tổng kết tuần hiện tại\n"
         "/month - tổng kết tháng hiện tại\n"
         "/history - kiểm tra lịch sử MB\n"
-        "/sync_history - đồng bộ khoảng 240 ngày lịch sử MB\n"
+        "/sync_history - đồng bộ khoảng 365 ngày lịch sử MB\n"
         "/repair_history - vá 10 ngày gần nhất bị thiếu\n"
         "/status - trạng thái bot\n"
         "/test - kiểm tra Telegram"
@@ -375,7 +381,7 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_sync_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(
         update,
-        "📚 Bắt đầu đồng bộ khoảng 240 ngày lịch sử MB. "
+        "📚 Bắt đầu kiểm tra và bổ sung dữ liệu trong 365 ngày gần nhất. "
         "Có thể mất vài phút."
     )
 
@@ -384,7 +390,7 @@ async def cmd_sync_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sync_mb_history,
             store,
             engine.results,
-            240,
+            365,
             0.12,
         )
 
