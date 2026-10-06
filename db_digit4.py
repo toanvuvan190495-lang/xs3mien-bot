@@ -453,6 +453,7 @@ def db_history_and_stability(rows):
 
 
 
+
 def analyze_digit4(rows):
     specials = _chronological_specials(rows)
 
@@ -471,114 +472,198 @@ def analyze_digit4(rows):
     pp = parity.get("probabilities", {})
     sp = size.get("probabilities", {})
 
-    # Chỉ chọn khi hệ cầu đã có dữ liệu/pattern thật và confidence đủ tối thiểu.
-    parity_ready = bool(parity.get("ready")) and parity.get("confidence", 0.0) >= 0.03
-    size_ready = bool(size.get("ready")) and size.get("confidence", 0.0) >= 0.03
+    sample = len(specials)
 
-    if parity_ready:
-        parity_pick = "C" if pp.get("C", 0.5) > pp.get("L", 0.5) else "L"
-        parity_pick_prob = float(pp.get(parity_pick, 0.5))
-    else:
-        parity_pick = None
-        parity_pick_prob = 0.5
+    # ------------------------------------------------------------
+    # V3.10:
+    # "Đủ dữ liệu" chỉ phụ thuộc số kỳ lịch sử.
+    # Tín hiệu mạnh/yếu là chuyện khác.
+    # ------------------------------------------------------------
+    history_ready = sample >= 20
 
-    if size_ready:
-        size_pick = "X" if sp.get("X", 0.5) > sp.get("T", 0.5) else "T"
-        size_pick_prob = float(sp.get(size_pick, 0.5))
-    else:
-        size_pick = None
-        size_pick_prob = 0.5
+    # Luôn xác định bên đang nghiêng nếu đã đủ lịch sử.
+    parity_pick = None
+    size_pick = None
 
-    # Xếp độ mạnh hai yếu tố để hiển thị.
-    chosen_factors = [
-        {
-            "code": parity_pick,
-            "label": {"C": "Chẵn", "L": "Lẻ"}.get(parity_pick, "Chưa đủ dữ liệu"),
-            "probability": parity_pick_prob,
-            "confidence": parity.get("confidence", 0.0),
-            "system": "parity",
-        },
-        {
-            "code": size_pick,
-            "label": {"X": "Xỉu", "T": "Tài"}.get(size_pick, "Chưa đủ dữ liệu"),
-            "probability": size_pick_prob,
-            "confidence": size.get("confidence", 0.0),
-            "system": "size",
-        },
-    ]
-    chosen_factors.sort(
-        key=lambda x: (x["probability"] - 0.5) * max(0.05, x["confidence"]),
-        reverse=True,
+    if history_ready and pp:
+        parity_pick = (
+            "C"
+            if pp.get("C", 0.5) >= pp.get("L", 0.5)
+            else "L"
+        )
+
+    if history_ready and sp:
+        size_pick = (
+            "X"
+            if sp.get("X", 0.5) >= sp.get("T", 0.5)
+            else "T"
+        )
+
+    parity_pick_prob = (
+        float(pp.get(parity_pick, 0.5))
+        if parity_pick is not None
+        else 0.5
+    )
+    size_pick_prob = (
+        float(sp.get(size_pick, 0.5))
+        if size_pick is not None
+        else 0.5
     )
 
-    # Giao của 2 điều kiện => đầu số chữ số thứ 4.
-    candidate_digits = []
-    if parity_pick is not None and size_pick is not None:
-        for d in range(10):
-            parity_ok = (d % 2 == 0) if parity_pick == "C" else (d % 2 == 1)
-            size_ok = (d <= 4) if size_pick == "X" else (d >= 5)
-            if parity_ok and size_ok:
-                candidate_digits.append(d)
+    # Strong = pattern có evidence và confidence walk-forward đủ tốt.
+    # Weak/conflict vẫn được dùng nhẹ, chứ không bị loại.
+    parity_strong = bool(
+        history_ready
+        and parity.get("ready")
+        and parity.get("evidence")
+        and float(parity.get("confidence", 0.0)) >= 0.03
+    )
+    size_strong = bool(
+        history_ready
+        and size.get("ready")
+        and size.get("evidence")
+        and float(size.get("confidence", 0.0)) >= 0.03
+    )
 
-    # 50% cầu số 4:
-    # - số khớp CẢ HAI trạng thái được điểm mạnh nhất;
-    # - khớp 1 trạng thái vẫn có điểm phụ;
-    # - không khớp trạng thái nào gần như không được điểm.
+    parity_status = (
+        "strong" if parity_strong
+        else "weak" if history_ready
+        else "insufficient"
+    )
+    size_status = (
+        "strong" if size_strong
+        else "weak" if history_ready
+        else "insufficient"
+    )
+
+    # ------------------------------------------------------------
+    # Trọng số nội bộ của component 40% cầu số 4.
     #
-    # Độ mạnh từng hệ được điều chỉnh theo xác suất + confidence walk-forward.
-    parity_strength = max(
-        0.0,
-        (parity_pick_prob - 0.5) * 2
-        * max(0.15, parity.get("confidence", 0.0)),
-    )
-    size_strength = max(
-        0.0,
-        (size_pick_prob - 0.5) * 2
-        * max(0.15, size.get("confidence", 0.0)),
-    )
+    # - cả hai mạnh: chia động theo chất lượng tín hiệu;
+    # - 1 mạnh + 1 yếu: nhánh mạnh 80%, yếu 20%;
+    # - cả hai yếu: 50/50 nhưng từng nhánh bị shrink mạnh về neutral.
+    # ------------------------------------------------------------
+    parity_conf = float(parity.get("confidence", 0.0))
+    size_conf = float(size.get("confidence", 0.0))
 
-    # Khi cả hai tín hiệu đều yếu, vẫn giữ neutral chứ không ép đầu.
-    total_strength = parity_strength + size_strength
-    if total_strength <= 1e-9:
-        wp = ws = 0.5
+    parity_edge = abs(parity_pick_prob - 0.5) * 2.0
+    size_edge = abs(size_pick_prob - 0.5) * 2.0
+
+    if parity_strong and size_strong:
+        qp = max(0.01, parity_edge * max(0.10, parity_conf))
+        qs = max(0.01, size_edge * max(0.10, size_conf))
+        total = qp + qs
+        wp = qp / total
+        ws = qs / total
+    elif parity_strong and not size_strong:
+        wp, ws = 0.80, 0.20
+    elif size_strong and not parity_strong:
+        wp, ws = 0.20, 0.80
     else:
-        wp = parity_strength / total_strength
-        ws = size_strength / total_strength
+        wp, ws = 0.50, 0.50
 
+    # ------------------------------------------------------------
+    # HARD PRIORITY HEADS:
+    # - cả 2 mạnh => giao Chẵn/Lẻ với Tài/Xỉu;
+    # - chỉ CL mạnh => 5 đầu theo CL;
+    # - chỉ TX mạnh => 5 đầu theo TX;
+    # - cả 2 yếu => không khóa đầu.
+    # ------------------------------------------------------------
+    candidate_digits = []
+
+    for d in range(10):
+        parity_match = (
+            parity_pick is not None
+            and (
+                ((d % 2 == 0) and parity_pick == "C")
+                or ((d % 2 == 1) and parity_pick == "L")
+            )
+        )
+        size_match = (
+            size_pick is not None
+            and (
+                ((d <= 4) and size_pick == "X")
+                or ((d >= 5) and size_pick == "T")
+            )
+        )
+
+        if parity_strong and size_strong:
+            keep = parity_match and size_match
+        elif parity_strong:
+            keep = parity_match
+        elif size_strong:
+            keep = size_match
+        else:
+            keep = False
+
+        if keep:
+            candidate_digits.append(d)
+
+    # ------------------------------------------------------------
+    # SCORE 00–99:
+    # Mỗi nhánh luôn độc lập. Nhánh yếu chỉ tác động nhẹ.
+    # ------------------------------------------------------------
     scores = {}
     match_info = {}
+
+    # Strong branch gets full directional effect.
+    # Weak/conflicting branch gets only 25% directional effect.
+    parity_effect = (
+        1.0 if parity_strong
+        else 0.25 if history_ready
+        else 0.0
+    )
+    size_effect = (
+        1.0 if size_strong
+        else 0.25 if history_ready
+        else 0.0
+    )
 
     for n in NUMBERS:
         d = int(n[0])
 
-        parity_match = False if parity_pick is None else (
-            ((d % 2 == 0) and parity_pick == "C") or
-            ((d % 2 == 1) and parity_pick == "L")
+        parity_match = (
+            parity_pick is not None
+            and (
+                ((d % 2 == 0) and parity_pick == "C")
+                or ((d % 2 == 1) and parity_pick == "L")
+            )
         )
-        size_match = False if size_pick is None else (
-            ((d <= 4) and size_pick == "X") or
-            ((d >= 5) and size_pick == "T")
+        size_match = (
+            size_pick is not None
+            and (
+                ((d <= 4) and size_pick == "X")
+                or ((d >= 5) and size_pick == "T")
+            )
         )
 
-        # Khi chưa đủ dữ liệu cho một trong hai hệ thì giữ component trung tính.
-        if parity_pick is None or size_pick is None:
-            component = 0.5
-        else:
-            component = 0.0
-            component += wp * (1.0 if parity_match else 0.0)
-            component += ws * (1.0 if size_match else 0.0)
-
-        # Intersection bonus: đúng cả 2 điều kiện là nhóm đầu ưu tiên nhất.
-        if parity_match and size_match:
-            component = min(1.0, component + 0.22)
-
-        # Khi confidence rất thấp, co component về 0.5 để tránh ép cầu yếu.
-        combined_conf = min(
-            1.0,
-            0.5 * float(parity.get("confidence", 0.0))
-            + 0.5 * float(size.get("confidence", 0.0)),
+        # Probability-based branch score.
+        # Match gets P(picked); mismatch gets 1-P(picked).
+        pp_branch = (
+            parity_pick_prob
+            if parity_match
+            else 1.0 - parity_pick_prob
         )
-        component = 0.5 + (component - 0.5) * combined_conf
+        ps_branch = (
+            size_pick_prob
+            if size_match
+            else 1.0 - size_pick_prob
+        )
+
+        # Weak branch pulled strongly toward neutral 0.5.
+        pp_eff = 0.5 + (pp_branch - 0.5) * parity_effect
+        ps_eff = 0.5 + (ps_branch - 0.5) * size_effect
+
+        component = wp * pp_eff + ws * ps_eff
+
+        # Small intersection bonus only when BOTH systems are strong.
+        if (
+            parity_strong
+            and size_strong
+            and parity_match
+            and size_match
+        ):
+            component = min(1.0, component + 0.08)
 
         scores[n] = component
         match_info[n] = {
@@ -587,26 +672,73 @@ def analyze_digit4(rows):
             "size_match": size_match,
         }
 
+    chosen_factors = [
+        {
+            "code": parity_pick,
+            "label": {
+                "C": "Chẵn",
+                "L": "Lẻ",
+            }.get(parity_pick, "—"),
+            "probability": parity_pick_prob,
+            "confidence": parity_conf,
+            "system": "parity",
+            "status": parity_status,
+            "weight": wp,
+        },
+        {
+            "code": size_pick,
+            "label": {
+                "X": "Xỉu",
+                "T": "Tài",
+            }.get(size_pick, "—"),
+            "probability": size_pick_prob,
+            "confidence": size_conf,
+            "system": "size",
+            "status": size_status,
+            "weight": ws,
+        },
+    ]
+
     return {
         "scores": scores,
         "parity": parity,
         "size": size,
 
+        "history_ready": history_ready,
+        "sample": sample,
+
         "parity_pick": parity_pick,
-        "parity_pick_label": {"C": "Chẵn", "L": "Lẻ"}.get(parity_pick, "Chưa đủ dữ liệu"),
+        "parity_pick_label": {
+            "C": "Chẵn",
+            "L": "Lẻ",
+        }.get(parity_pick, "—"),
         "parity_pick_prob": parity_pick_prob,
+        "parity_status": parity_status,
+        "parity_strong": parity_strong,
 
         "size_pick": size_pick,
-        "size_pick_label": {"X": "Xỉu", "T": "Tài"}.get(size_pick, "Chưa đủ dữ liệu"),
+        "size_pick_label": {
+            "X": "Xỉu",
+            "T": "Tài",
+        }.get(size_pick, "—"),
         "size_pick_prob": size_pick_prob,
+        "size_status": size_status,
+        "size_strong": size_strong,
 
         "chosen_factors": chosen_factors,
         "candidate_digits": candidate_digits,
-        "candidate_digits_text": "".join(str(x) for x in candidate_digits) if candidate_digits else "—",
-        "ready": parity_pick is not None and size_pick is not None,
+        "candidate_digits_text": (
+            "".join(str(x) for x in candidate_digits)
+            if candidate_digits
+            else "—"
+        ),
+
+        # ready giờ có nghĩa: history đủ để phân tích,
+        # không còn nghĩa cả 2 nhánh đều phải mạnh.
+        "ready": history_ready,
 
         "parity_weight": wp,
         "size_weight": ws,
-        "sample": len(specials),
         "match_info": match_info,
     }
+

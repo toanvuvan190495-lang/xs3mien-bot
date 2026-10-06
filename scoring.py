@@ -262,11 +262,11 @@ def aggregate_region(
         )
 
     # ------------------------------------------------------------
-    # ĐB64 V3 — đúng trọng số người dùng chốt:
-    # 25% model ĐB lịch sử
-    # 50% cầu chữ số thứ 4 (Chẵn/Lẻ + Tài/Xỉu)
-    # 15% stability 30/60/90
-    # 10% web/source reliability
+    # ĐB64 V3.10 — đúng trọng số người dùng chốt:
+    # 20% model ĐB lịch sử
+    # 40% cầu chữ số thứ 4 (Chẵn/Lẻ + Tài/Xỉu)
+    # 20% stability 30/60/90
+    # 20% web/source reliability
     # ------------------------------------------------------------
     ctx = db_context or {}
 
@@ -279,7 +279,7 @@ def aggregate_region(
         {n: 0.5 for n in NUMBERS},
     )
 
-    # Web DB layer: reliability + consensus, nhưng chỉ chiếm đúng 10%.
+    # Web DB layer: reliability + consensus, chiếm đúng 20%.
     web_db_raw = {n: 0.0 for n in NUMBERS}
     if community:
         cd = normalize(community[1])
@@ -301,10 +301,10 @@ def aggregate_region(
         w = web_db.get(n, 0.0)
 
         db_final[n] = (
-            0.25 * h
-            + 0.50 * p
-            + 0.15 * s
-            + 0.10 * w
+            0.20 * h
+            + 0.40 * p
+            + 0.20 * s
+            + 0.20 * w
         )
 
         components[n] = {
@@ -319,8 +319,8 @@ def aggregate_region(
 
     # ------------------------------------------------------------
     # Chọn ĐB64:
-    # Nếu cầu số 4 đã sẵn sàng, TOÀN BỘ số thuộc các đầu ưu tiên
-    # phải có mặt trong dàn 64.
+    # Nếu cầu số 4 có nhánh mạnh, TOÀN BỘ số thuộc các đầu ưu tiên
+    # của nhánh mạnh phải có mặt trong dàn 64.
     #
     # Ví dụ Lẻ + Xỉu => candidate_digits=[1,3]
     # => bảo đảm đủ 10-19 và 30-39 (20 số).
@@ -359,10 +359,10 @@ def aggregate_region(
         "db": {n: round(db_norm[n] * 100, 1) for n in NUMBERS},
         "db_components": components,
         "db_formula": {
-            "history": 0.25,
-            "digit4": 0.50,
-            "stability": 0.15,
-            "web": 0.10,
+            "history": 0.20,
+            "digit4": 0.40,
+            "stability": 0.20,
+            "web": 0.20,
         },
         "db_digit4": digit4_info,
         "db_priority": {

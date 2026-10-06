@@ -267,3 +267,42 @@ trên 30/60/90 ngày, ưu tiên 30 ngày gần nhất.
 
 ĐB64, cầu số 4, Result Guard, lịch tự động, daily/weekly/monthly summary,
 các lệnh và cách tính tiền giữ nguyên V3.8.
+
+
+## V3.10 - Partial Digit4 Signals
+
+Chỉ thay phần ĐB64/cầu số 4 so với V3.9.
+
+### Trạng thái dữ liệu
+- >=20 kỳ: coi là ĐỦ DỮ LIỆU để phân tích.
+- Tín hiệu mạnh/yếu được đánh giá riêng.
+- Có 242/365 kỳ nhưng pattern xung đột sẽ báo:
+  `ĐỦ DỮ LIỆU - tín hiệu yếu/xung đột`, không báo thiếu dữ liệu.
+
+### Hai nhánh hoạt động độc lập
+Ví dụ:
+- Chẵn/Lẻ yếu/xung đột;
+- Tài/Xỉu mạnh, nghiêng Tài.
+
+Bot vẫn dùng Tài bình thường.
+Nhánh Chẵn/Lẻ chỉ giảm trọng số, không làm vô hiệu cả 40% cầu số 4.
+
+Phân bổ nội bộ:
+- cả hai mạnh: chia động theo chất lượng/confidence;
+- một mạnh, một yếu: mạnh 80%, yếu 20%;
+- cả hai yếu: 50/50 nhưng mỗi nhánh bị shrink mạnh về neutral.
+
+Hard priority:
+- cả 2 mạnh -> giao hai điều kiện;
+- chỉ Chẵn/Lẻ mạnh -> khóa 5 đầu theo Chẵn hoặc Lẻ;
+- chỉ Tài/Xỉu mạnh -> khóa 5 đầu theo Tài hoặc Xỉu;
+- cả 2 yếu -> không khóa cứng đầu.
+
+### Công thức ĐB64 mới
+- 20% lịch sử ĐB
+- 40% cầu số 4
+- 20% stability 30/60/90
+- 20% web/source reliability
+
+Song thủ Cầu 90, history 365, Result Guard, lịch tự động,
+tổng kết ngày/tuần/tháng và cách tính tiền giữ nguyên V3.9.
