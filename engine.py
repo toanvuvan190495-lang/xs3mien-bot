@@ -6,7 +6,7 @@ from free_results import FreeResultSource
 from history_features import build_history_scores
 from scoring import station_score_bundle, community_scores, aggregate_region, explain
 from selector import select_best_model
-from loto_cau90 import build_loto_cau90
+from loto_v4 import build_loto_v4
 from gpt_layer import GPTReviewer
 from db_digit4 import db_history_and_stability, analyze_digit4
 
@@ -57,28 +57,31 @@ class PredictionEngine:
         )
 
         # --------------------------------------------------------
-        # 2) SONG THỦ MB V3.9
-        #    Toàn bộ MB, đúng 90 ngày/kỳ gần nhất từ Volume/SQLite.
-        #    Không chia theo station/thứ nữa.
+        # 2) SONG THỦ MB V4: walk-forward next-draw signals.
+        #    Dùng 90 kỳ gần nhất làm feature window; lịch sử dài hơn
+        #    (tối đa 365 kỳ) để kiểm chứng walk-forward không rò tương lai.
+        #    Chỉ áp dụng chống lặp NGUYÊN CẶP hôm qua, không cấm từng số.
         # --------------------------------------------------------
         stl_history = self.store.get_region_history(
             region,
             d.isoformat(),
-            90,
+            min(365, settings.history_days),
         )
+        from datetime import timedelta
+        previous_date = (d - timedelta(days=1)).isoformat()
+        previous = self.store.get_prediction(previous_date, region)
+        previous_pair = previous.get("song_thu", []) if previous else []
 
-        loto_context = build_loto_cau90(
+        loto_context = build_loto_v4(
             stl_history,
             detail,
-            max_web_weight=min(
-                0.25,
-                settings.community_max_weight,
-            ),
+            max_web_weight=min(0.20, settings.community_max_weight),
+            previous_pair=previous_pair,
         )
 
-        selected = "cau90_mb"
+        selected = "stl_v4_wf90"
         model_stats = {
-            "cau90_mb": {
+            "stl_v4_wf90": {
                 "meta": loto_context.get("meta", {}),
                 "pair_meta": loto_context.get("pair_meta", {}),
                 "trusted_sources": loto_context.get(
@@ -139,7 +142,13 @@ class PredictionEngine:
                 reasons,
                 detail,
             )
-            song_thu = reviewed["song_thu"]
+            reviewed_pair = list(reviewed["song_thu"])
+            if (
+                len(reviewed_pair) == 2
+                and len(set(reviewed_pair)) == 2
+                and (not previous_pair or set(reviewed_pair) != set(previous_pair))
+            ):
+                song_thu = reviewed_pair
             db64 = reviewed["db64"]
 
         return {
