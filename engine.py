@@ -57,7 +57,7 @@ class PredictionEngine:
         )
 
         # --------------------------------------------------------
-        # 2) SONG THỦ MB V4: walk-forward next-draw signals.
+        # 2) SONG THỦ MB V4.1: Multi-Cầu, walk-forward next-draw.
         #    Dùng 90 kỳ gần nhất làm feature window; lịch sử dài hơn
         #    (tối đa 365 kỳ) để kiểm chứng walk-forward không rò tương lai.
         #    Chỉ áp dụng chống lặp NGUYÊN CẶP hôm qua, không cấm từng số.
@@ -79,9 +79,9 @@ class PredictionEngine:
             previous_pair=previous_pair,
         )
 
-        selected = "stl_v4_wf90"
+        selected = "stl_v41_multi_cau"
         model_stats = {
-            "stl_v4_wf90": {
+            "stl_v41_multi_cau": {
                 "meta": loto_context.get("meta", {}),
                 "pair_meta": loto_context.get("pair_meta", {}),
                 "trusted_sources": loto_context.get(

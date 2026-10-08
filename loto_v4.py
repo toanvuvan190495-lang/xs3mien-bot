@@ -12,6 +12,7 @@ Scores are RELATIVE RANKS, never claimed to be calibrated probabilities.
 from collections import Counter
 from itertools import combinations
 from math import exp
+from loto_multi_cau import prepare_draws, structural_features
 
 NUMBERS = [f"{i:02d}" for i in range(100)]
 
@@ -139,24 +140,28 @@ def _estimate_features(counts90):
     }
 
 
-def _walkforward(counts, tests=90):
-    """Simulate ranking before each day using ONLY earlier 90 days.
+def _walkforward(counts, draws, tests=90):
+    """Evaluate each signal as a next-day prediction using only past draws.
 
-    Fixed component candidates are evaluated on total nháy, against a
-    same-day random-two baseline. Market/web features are deliberately
-    excluded from historical simulation (no archived timestamps of web
-    snapshots -> including current web would leak future information).
+    No web in historical validation because forum posts aren't archived with
+    reliable as-of timestamps. Structural patterns at i only see draws[:i].
     """
-    keys=('pattern','trend','rhythm','stability','hybrid')
+    keys=('pattern','structure','consensus','trend','rhythm','stability','hybrid')
     results={k:[] for k in keys}
     first=max(90,len(counts)-tests)
     for i in range(first,len(counts)):
         past=counts[max(0,i-90):i]
+        prior_draws=draws[:i]
         features=_estimate_features(past)
-        hybrid={n:(.40*features['pattern'][n]+.30*features['trend'][n]
-                   +.15*features['rhythm'][n]+.15*features['stability'][n])
+        struct,consensus,_=structural_features(prior_draws,features['pattern'])
+        components={**features,'structure':struct,'consensus':consensus}
+        hybrid={n:(.15*features['pattern'][n]
+                   +.10*struct[n]+.05*consensus[n]
+                   +.15*features['trend'][n]
+                   +.05*features['rhythm'][n]
+                   +.05*features['stability'][n])/.55
                 for n in NUMBERS}
-        by_strategy={**features,'hybrid':hybrid}
+        by_strategy={**components,'hybrid':hybrid}
         outcome=counts[i]
         day_baseline=sum(outcome.values())*2.0/100.0
         for k in keys:
@@ -170,7 +175,6 @@ def _walkforward(counts, tests=90):
             vals=values[-days:]
             if not vals: continue
             edge=sum(a-b for a,b in vals)/len(vals)
-            # Conservative shrink: not enough days to conclude an edge.
             edge*=len(vals)/(len(vals)+80.0)
             by_window[str(days)]={'trials':len(vals),'edge_nhay':round(edge,4)}
         edge=(.5*by_window.get('30',{}).get('edge_nhay',0)
@@ -181,9 +185,13 @@ def _walkforward(counts, tests=90):
 
 
 def _validated_component(features, stats):
-    """25% walk-forward component chooses feature mix with modest caps."""
+    """25% WF component weighs independently tested feature families.
+
+    A history-only hybrid is also tested but is deliberately not part of the
+    weighted feature mix to prevent counting it twice.
+    """
     weights={}
-    for k in ('pattern','trend','rhythm','stability'):
+    for k in ('pattern','structure','consensus','trend','rhythm','stability'):
         s=stats.get(k,{})
         if s.get('trials',0)<25:
             weights[k]=1.0
@@ -262,14 +270,15 @@ def _choose_pair(scores, agreement, previous_pair):
 
 
 def build_loto_v4(rows, source_detail=None, max_web_weight=.20, previous_pair=None):
-    """Return the same context interface expected by unchanged scoring.py."""
-    counts=_prepare(list(rows or [])[:365])
+    """V4.1 Multi-Cầu with unchanged scoring.py / ĐB64 integration."""
+    draws=prepare_draws(list(rows or [])[:365])
+    counts=[draw['counts'] for draw in draws]
     recent=counts[-90:]
     neutral={n:.5 for n in NUMBERS}
     if len(recent)<30:
-        # Conservative cold-start; web still available if there is any.
+        # Conservative cold start; no invented 27-prize structural claims.
         web,agreement,used,web_w=_trusted_web(source_detail)
-        web_w=min(max_web_weight,web_w)
+        web_w=min(max(0.0,max_web_weight),web_w)
         result={n:((1-web_w)*.5+web_w*web[n]) for n in NUMBERS}
         result=_norm(result)
         pair,detail=_choose_pair(result,agreement,previous_pair)
@@ -277,18 +286,25 @@ def build_loto_v4(rows, source_detail=None, max_web_weight=.20, previous_pair=No
                 'web_weight':web_w,'trusted_sources':used,
                 'web_agreement':agreement,'pair_meta':detail,
                 'meta':{'history_rows':len(recent),'wf_trials':0,
-                        'formula':'cold_start','walkforward':{}}}
+                        'formula':'cold_start',
+                        'structural':{'available':False},'walkforward':{}}}
 
     features=_estimate_features(recent)
-    stats=_walkforward(counts,tests=90)
+    struct,consensus,structure_meta=structural_features(draws,features['pattern'])
+    features['structure']=struct
+    features['consensus']=consensus
+    stats=_walkforward(counts,draws,tests=90)
     validated,weights=_validated_component(features,stats)
     web,agreement,used,web_w=_trusted_web(source_detail)
     web_w=max(0.0,min(.20,float(max_web_weight),web_w))
 
-    # Recipe: 30% conditional patterns, 25% validated mix, 15% trend,
-    # 20% max web, 10% rhythm/stability. Reallocate unused web share
-    # proportionally to history rather than giving 0.5 to all numbers.
-    core={n:(.30*features['pattern'][n]
+    # 15% dynamic + 10% 27-prize structure + 5% independent consensus;
+    # 25% walkforward validated + 15% trend + 10% rhythm/stability;
+    # 20% web (capped, not backfilled from past web posts).
+    # The 80% non-web core is reweighted when web sources are unavailable.
+    core={n:(.15*features['pattern'][n]
+             +.10*features['structure'][n]
+             +.05*features['consensus'][n]
              +.25*validated[n]
              +.15*features['trend'][n]
              +.05*features['rhythm'][n]
@@ -304,10 +320,12 @@ def build_loto_v4(rows, source_detail=None, max_web_weight=.20, previous_pair=No
             'history_rows':len(recent),
             'long_history_rows':len(counts),
             'wf_trials':stats.get('hybrid',{}).get('trials',0),
-            'formula':{'conditional_pattern':.30,'walkforward':.25,
+            'formula':{'dynamic_pattern':.15,'structure_27':.10,
+                       'multi_cau_consensus':.05,'walkforward':.25,
                        'trend':.15,'web_cap':.20,'rhythm_stability':.10},
+            'structural':structure_meta,
             'feature_walkforward':stats,
             'validated_feature_weights':weights,
-            'note':'Điểm xếp hạng, không phải xác suất trúng',
+            'note':'Cầu là giả thuyết kiểm định; điểm xếp hạng không phải xác suất.',
         },
     }
