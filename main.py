@@ -14,8 +14,8 @@ from config import settings, PREDICT_CRON, REGION_NAMES
 from storage import Storage
 from engine import PredictionEngine
 from settlement import settle
-from messages import format_prediction
-from mb_performance import MBPerformance, format_result, format_daily, format_weekly, format_monthly
+from messages import format_prediction, format_db45_prediction
+from mb_performance import MBPerformance, format_result, format_daily, format_weekly, format_monthly, format_db45_daily, format_db45_period
 from history_bootstrap import (
     history_count,
     sync_mb_history,
@@ -120,6 +120,10 @@ async def _settle_prediction(p, d, results, notify=True):
                != int(record.get("total_loto_hits", 0))
             or bool(existing.get("db64_hit", False))
                != bool(record.get("db64_hit", False))
+            or bool(existing.get("db45_hit", False))
+               != bool(record.get("db45_hit", False))
+            or int(existing.get("db45_capital", 0))
+               != int(record.get("db45_capital", 0))
         )
 
     if notify:
@@ -326,6 +330,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/today - tổng kết hôm nay\n"
         "/week - tổng kết tuần hiện tại\n"
         "/month - tổng kết tháng hiện tại\n"
+        "/db45 - xem dàn ghép số 4 × số 5 hôm nay\n"
+        "/db45_today - đối soát/tổng kết dàn ghép hôm nay\n"
+        "/db45_week - tổng kết dàn ghép tuần\n"
+        "/db45_month - tổng kết dàn ghép tháng\n"
         "/history - kiểm tra lịch sử MB\n"
         "/sync_history - đồng bộ khoảng 365 ngày lịch sử MB\n"
         "/repair_history - vá 10 ngày gần nhất bị thiếu\n"
@@ -480,6 +488,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if p and p.get("song_thu"):
             lines.append(f"Đã chốt: {' – '.join(p['song_thu'])} ✅")
             lines.append(f"ĐB64: {len(p.get('db50', []))} số ✅")
+            combo = (p.get('scores') or {}).get('db45_combo', {})
+            lines.append(f"ĐB ghép 4×5: {len(combo.get('numbers', []))} số"
+                         if combo.get('numbers') else "ĐB ghép 4×5: chưa chốt")
         else:
             lines.append("Chưa chốt.")
 
@@ -487,6 +498,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(
                 f"Đã đối soát: STL {rec['total_loto_hits']} nháy"
                 f" | ĐB64 {'✅' if rec['db64_hit'] else '❌'}"
+                + (f" | ĐB ghép {'✅' if rec.get('db45_hit') else '❌'}"
+                   if rec.get('db45_enabled') else "")
             )
 
         await reply(update, "\n".join(lines))
@@ -606,6 +619,25 @@ async def cmd_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, format_monthly(performance.month(today())))
 
 
+async def cmd_db45(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    p = store.get_prediction(today().isoformat(), 'MB')
+    await reply(update, format_db45_prediction(p) if p else
+                '📭 Hôm nay chưa có dàn ghép. Chạy /mb để chốt cùng ĐB64 và STL.')
+
+
+async def cmd_db45_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    d = today().isoformat()
+    await reply(update, format_db45_daily(performance.get_day(d), d))
+
+
+async def cmd_db45_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, format_db45_period(performance.week(today()), 'TUẦN'))
+
+
+async def cmd_db45_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, format_db45_period(performance.month(today()), 'THÁNG'))
+
+
 async def startup():
     global application
 
@@ -625,6 +657,10 @@ async def startup():
     application.add_handler(CommandHandler("today", cmd_today))
     application.add_handler(CommandHandler("week", cmd_week))
     application.add_handler(CommandHandler("month", cmd_month))
+    application.add_handler(CommandHandler("db45", cmd_db45))
+    application.add_handler(CommandHandler("db45_today", cmd_db45_today))
+    application.add_handler(CommandHandler("db45_week", cmd_db45_week))
+    application.add_handler(CommandHandler("db45_month", cmd_db45_month))
     application.add_handler(CommandHandler("history", cmd_history))
     application.add_handler(CommandHandler("sync_history", cmd_sync_history))
     application.add_handler(CommandHandler("repair_history", cmd_repair_history))

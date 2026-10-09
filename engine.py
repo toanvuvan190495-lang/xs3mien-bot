@@ -9,6 +9,7 @@ from selector import select_best_model
 from loto_v4 import build_loto_v4
 from gpt_layer import GPTReviewer
 from db_digit4 import db_history_and_stability, analyze_digit4
+from db45_combo import analyze_digit5, build_db45_combo
 
 
 class PredictionEngine:
@@ -114,6 +115,9 @@ class PredictionEngine:
             region_history
         )
         digit4 = analyze_digit4(region_history)
+        # Dàn ghép ĐB mới hoạt động độc lập; không thay đổi ĐB64.
+        digit5 = analyze_digit5(region_history)
+        db45_combo = build_db45_combo(digit4, digit5)
 
         song_thu, db64, scores = aggregate_region(
             bundles,
@@ -178,6 +182,8 @@ class PredictionEngine:
                 ),
                 "db_formula": scores.get("db_formula", {}),
                 "db_digit4": scores.get("db_digit4", {}),
+                "db_digit5": digit5,
+                "db45_combo": db45_combo,
                 "db_priority": scores.get("db_priority", {}),
                 "loto_cau90": {
                     "history_rows": (

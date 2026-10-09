@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date, timedelta
 from pathlib import Path
+from db45_combo import prediction_combo, DB45_STAKE_PER_NUMBER, DB45_PAYOUT_IF_HIT
 
 # SONG THỦ
 LOTO_HIT_PAYOUT = 990_000
@@ -73,8 +74,18 @@ class MBPerformance:
             special_last2 = info.get("last2")
             break
 
-        total_payout = loto_payout + db_payout
-        total_capital = loto_capital + db_capital
+        # DÀN GHÉP 4×5: chỉ tính tiền cho dự đoán có dàn được chốt
+        # (không gán vốn hoặc hồi tố kết quả cho những ngày V4.1 cũ).
+        combo = prediction_combo(prediction)
+        combo_numbers = list(combo.get("numbers", []))
+        combo_enabled = bool(combo_numbers)
+        combo_capital = len(combo_numbers) * DB45_STAKE_PER_NUMBER if combo_enabled else 0
+        combo_hit = bool(combo_enabled and special_last2 in set(combo_numbers))
+        combo_payout = DB45_PAYOUT_IF_HIT if combo_hit else 0
+        combo_net = combo_payout - combo_capital
+
+        total_payout = loto_payout + db_payout + combo_payout
+        total_capital = loto_capital + db_capital + combo_capital
         total_net = total_payout - total_capital
 
         record = {
@@ -92,6 +103,13 @@ class MBPerformance:
             "db64_payout": db_payout,
             "db64_capital": db_capital,
             "db64_net": db_net,
+            "db45_enabled": combo_enabled,
+            "db45_numbers": combo_numbers,
+            "db45_count": len(combo_numbers),
+            "db45_hit": combo_hit,
+            "db45_capital": combo_capital,
+            "db45_payout": combo_payout,
+            "db45_net": combo_net,
             "special": special,
             "special_last2": special_last2,
 
@@ -135,6 +153,11 @@ class MBPerformance:
             "db64_wins": sum(int(bool(r.get("db64_hit", False))) for r in rows),
             "db64_payout": sum(int(r.get("db64_payout", 0)) for r in rows),
             "db64_capital": sum(int(r.get("db64_capital", DB64_DAILY_STAKE)) for r in rows),
+
+            "db45_days": sum(int(bool(r.get("db45_enabled", False))) for r in rows),
+            "db45_wins": sum(int(bool(r.get("db45_hit", False))) for r in rows),
+            "db45_payout": sum(int(r.get("db45_payout", 0)) for r in rows),
+            "db45_capital": sum(int(r.get("db45_capital", 0)) for r in rows),
 
             "total_payout": sum(int(r.get("total_payout", 0)) for r in rows),
             "total_capital": sum(int(r.get("total_capital", TOTAL_DAILY_STAKE)) for r in rows),
@@ -202,6 +225,11 @@ class MBPerformance:
                 for r in rows
             ),
 
+            "db45_days": sum(int(bool(r.get("db45_enabled", False))) for r in rows),
+            "db45_wins": sum(int(bool(r.get("db45_hit", False))) for r in rows),
+            "db45_payout": sum(int(r.get("db45_payout", 0)) for r in rows),
+            "db45_capital": sum(int(r.get("db45_capital", 0)) for r in rows),
+
             "total_payout": sum(
                 int(r.get("total_payout", 0))
                 for r in rows
@@ -243,6 +271,8 @@ def format_result(record: dict) -> str:
         f"📈 ĐB64 lãi/lỗ: <b>{_money(db_net)}</b>",
         "",
 
+        *_db45_result_lines(record),
+
         "━━━━━━━━━━━━━━",
         f"💼 Tổng vốn ngày: <b>{_money(record['total_capital'])}</b>",
         f"💵 Tổng nhận: <b>{_money(record['total_payout'])}</b>",
@@ -279,6 +309,8 @@ def format_daily(record: dict | None, draw_date: str) -> str:
         f"📈 ĐB64 lãi/lỗ: <b>{_money(record['db64_net'])}</b>",
         "",
 
+        *_db45_result_lines(record),
+
         "━━━━━━━━━━━━━━",
         f"💼 Tổng vốn: <b>{_money(record['total_capital'])}</b>",
         f"💵 Tổng nhận: <b>{_money(record['total_payout'])}</b>",
@@ -302,6 +334,8 @@ def format_weekly(summary: dict) -> str:
         lines.append(
             f"• {r['date']}: STL {r.get('total_loto_hits', 0)} nháy"
             f" | ĐB64 {'✅' if r.get('db64_hit') else '❌'}"
+            + (f" | ĐB ghép {'✅' if r.get('db45_hit') else '❌'}"
+               if r.get('db45_enabled') else "")
         )
 
     loto_net = summary["loto_payout"] - summary["loto_capital"]
@@ -322,6 +356,8 @@ def format_weekly(summary: dict) -> str:
         f"📈 ĐB64 lãi/lỗ: <b>{_money(db_net)}</b>",
         "",
 
+        *_db45_summary_lines(summary),
+
         "━━━━━━━━━━━━━━",
         f"📌 Số ngày đã đối soát: <b>{summary['settled_days']}</b>",
         f"💼 Tổng vốn tuần: <b>{_money(summary['total_capital'])}</b>",
@@ -330,7 +366,8 @@ def format_weekly(summary: dict) -> str:
         "",
         "<i>Quy ước: STL 270.000đ/số/ngày × 2 số; "
         "1 nháy nhận 990.000đ. ĐB64 vốn 640.000đ/ngày; "
-        "trúng nhận 990.000đ.</i>",
+        "trúng nhận 990.000đ. ĐB ghép: 10.000đ/số đã chốt; "
+        "trúng nhận 990.000đ; không tính ngày chưa triển khai.</i>",
     ]
 
     return "\n".join(lines)
@@ -351,6 +388,8 @@ def format_monthly(summary: dict) -> str:
         lines.append(
             f"• {r['date']}: STL {r.get('total_loto_hits', 0)} nháy"
             f" | ĐB64 {'✅' if r.get('db64_hit') else '❌'}"
+            + (f" | ĐB ghép {'✅' if r.get('db45_hit') else '❌'}"
+               if r.get('db45_enabled') else "")
         )
 
     loto_net = summary["loto_payout"] - summary["loto_capital"]
@@ -371,6 +410,8 @@ def format_monthly(summary: dict) -> str:
         f"📈 ĐB64 lãi/lỗ: <b>{_money(db_net)}</b>",
         "",
 
+        *_db45_summary_lines(summary),
+
         "━━━━━━━━━━━━━━",
         f"📌 Số ngày đã đối soát: <b>{summary['settled_days']}</b>",
         f"💼 Tổng vốn tháng: <b>{_money(summary['total_capital'])}</b>",
@@ -379,8 +420,69 @@ def format_monthly(summary: dict) -> str:
         "",
         "<i>Quy ước: STL 270.000đ/số/ngày × 2 số; "
         "1 nháy nhận 990.000đ. ĐB64 vốn 640.000đ/ngày; "
-        "trúng nhận 990.000đ.</i>",
+        "trúng nhận 990.000đ. ĐB ghép: 10.000đ/số đã chốt; "
+        "trúng nhận 990.000đ; không tính ngày chưa triển khai.</i>",
     ]
 
     return "\n".join(lines)
 
+
+
+def _db45_result_lines(record):
+    if not record.get("db45_enabled"):
+        return ["🧩 <b>ĐB GHÉP 4×5:</b> — chưa có dàn ở kỳ này", ""]
+    return [
+        f"🧩 <b>ĐB GHÉP 4×5: {'✅ TRÚNG' if record.get('db45_hit') else '❌ TRƯỢT'}</b>",
+        f"🔢 Dàn {record.get('db45_count', 0)} số: "
+        + " ".join(record.get("db45_numbers", [])),
+        f"💸 Vốn ĐB ghép: <b>{_money(record.get('db45_capital', 0))}</b>",
+        f"💰 Nhận ĐB ghép: <b>{_money(record.get('db45_payout', 0))}</b>",
+        f"📈 ĐB ghép lãi/lỗ: <b>{_money(record.get('db45_net', 0))}</b>",
+        "",
+    ]
+
+
+def _db45_summary_lines(summary):
+    days = int(summary.get("db45_days", 0))
+    if days <= 0:
+        return ["🧩 <b>ĐB GHÉP 4×5:</b> Chưa có ngày dự đoán", ""]
+    wins = int(summary.get('db45_wins', 0))
+    cap = int(summary.get('db45_capital', 0))
+    paid = int(summary.get('db45_payout', 0))
+    return [
+        f"🧩 ĐB ghép 4×5: <b>trúng {wins}/{days} ngày có dàn</b>",
+        f"💸 Vốn ĐB ghép: <b>{_money(cap)}</b>",
+        f"💰 Nhận ĐB ghép: <b>{_money(paid)}</b>",
+        f"📈 ĐB ghép lãi/lỗ: <b>{_money(paid - cap)}</b>",
+        "",
+    ]
+
+
+def format_db45_daily(record, draw_date):
+    lines = ["🧩 <b>KẾT QUẢ ĐB GHÉP 4×5</b>", f"📅 {draw_date}", ""]
+    if record is None:
+        lines.append("⏳ Chưa có kết quả được đối soát.")
+    elif not record.get("db45_enabled"):
+        lines.append("— Kỳ này chưa có dàn ghép được chốt (không tính tiền).")
+    else:
+        lines.append(f"🏆 Đặc biệt: <b>{record.get('special') or '—'}</b> → {record.get('special_last2') or '—'}")
+        lines.extend(_db45_result_lines(record))
+    return "\n".join(lines)
+
+
+def format_db45_period(summary, label):
+    lines = [
+        f"🧩 <b>TỔNG KẾT ĐB GHÉP 4×5 - {label}</b>",
+        f"📅 {summary['start']} → {summary['end']}", "",
+    ]
+    for row in summary.get("days", []):
+        if row.get("db45_enabled"):
+            lines.append(
+                f"• {row['date']}: {row.get('db45_count', 0)} số "
+                f"| {'✅' if row.get('db45_hit') else '❌'} "
+                f"| {_money(row.get('db45_net', 0))}"
+            )
+    lines.extend(["", *_db45_summary_lines(summary)])
+    lines.append("<i>10.000đ/số · ĐB trúng nhận 990.000đ. "
+                 "Chỉ thống kê các kỳ có dàn ghép được chốt.</i>")
+    return "\n".join(lines)

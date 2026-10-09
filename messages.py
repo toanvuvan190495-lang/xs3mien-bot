@@ -1,3 +1,5 @@
+from db45_combo import prediction_combo
+
 def _pct(v):
     try:
         return f"{float(v) * 100:.1f}%"
@@ -200,4 +202,61 @@ def format_prediction(p):
         f"🔎 {names}\n"
         f"<i>Chẵn/Lẻ và Tài/Xỉu được quyết định từ pattern lịch sử; "
         f"không có mẫu cố định. Bệt chỉ tính từ 5 kỳ liên tiếp.</i>"
+        + "\n\n"
+        + format_db45_prediction(p)
     )
+
+
+def format_db45_prediction(p):
+    """Independent Telegram report, works with old Storage persisted scores_json."""
+    scores = p.get('scores') or {}
+    if 'db45_combo' not in scores:
+        return ("🧩 <b>ĐB GHÉP 4×5</b>\n"
+                f"📅 {p.get('draw_date', '—')}\n"
+                "— Kỳ này chưa chốt dàn ghép theo V4.2; không tính vốn.")
+    combo = prediction_combo(p)
+    d4 = scores.get('db_digit4') or {}
+    d5 = scores.get('db_digit5') or {}
+
+    def pick_line(d, label):
+        history = int(d.get('sample', 0))
+        if not d.get('history_ready'):
+            return f"{label}: ❌ thiếu dữ liệu ({history} kỳ)"
+        cl = d.get('parity_pick_label', '—')
+        tx = d.get('size_pick_label', '—')
+        clstatus = '✅' if d.get('parity_strong') else '⚠️ yếu'
+        txstatus = '✅' if d.get('size_strong') else '⚠️ yếu'
+        pp = _pct(d.get('parity_pick_prob', 0.5))
+        sp = _pct(d.get('size_pick_prob', 0.5))
+        return (
+            f"{label} ({history} kỳ): <b>{cl} {pp}</b> {clstatus}"
+            f" | <b>{tx} {sp}</b> {txstatus}"
+        )
+
+    lines = [
+        "🧩 <b>DÀN ĐẶC BIỆT GHÉP SỐ 4 × SỐ 5</b>",
+        f"📅 {p.get('draw_date', '—')}", "",
+        pick_line(d4, "🔢 Số thứ 4"),
+        pick_line(d5, "🔢 Số thứ 5"),
+        "",
+        "🧬 <b>Cầu chữ số 5 (kỳ trước → kỳ kế):</b>",
+        *(_pattern_lines(d5.get('parity'), 2) or ["• Chẵn/Lẻ: chưa có mẫu cầu đủ tin cậy"]),
+        *(_pattern_lines(d5.get('size'), 2) or ["• Tài/Xỉu: chưa có mẫu cầu đủ tin cậy"]),
+        "",
+    ]
+    if not combo.get('numbers'):
+        lines.append('⏸ Không đủ lịch sử để tạo dàn ghép; không tính vốn.')
+    else:
+        lines.extend([
+            f"🔗 Hàng chục (số 4): <b>{''.join(map(str, combo.get('tens', [])))}</b>",
+            f"🔗 Hàng đơn vị (số 5): <b>{''.join(map(str, combo.get('units', [])))}</b>",
+            f"🎯 <b>DÀN ĐB GHÉP – {combo.get('count', 0)} SỐ</b>",
+            " ".join(combo['numbers']),
+            "",
+            f"💸 Vốn: <b>{combo['count']} × 10.000đ = {combo.get('capital', 0):,}đ</b>".replace(',', '.'),
+            "🏆 Nếu trúng đặc biệt: <b>nhận 990.000đ</b>",
+        ])
+        if combo.get('digit4_provisional') or combo.get('digit5_provisional'):
+            lines.append('⚠️ Có nhánh tín hiệu yếu: dàn ghép đang dùng lựa chọn tạm thời.')
+    lines.append('<i>Chỉ là dàn thống kê, không bảo đảm dự đoán đúng.</i>')
+    return "\n".join(lines)
